@@ -1,0 +1,47 @@
+collections:
+  - name: restaurants
+    description: Restaurants worth remembering.
+    fields:
+      - name: name
+        type: text
+        required: true
+        description: Restaurant name.
+      - name: city
+        type: text
+        description: City where the restaurant is located.
+
+records:
+  - collection: profiles
+    id: anna
+    values:
+      name: Anna
+      relation: wife
+
+  - collection: movies
+    id: inception-2010
+    values:
+      title: Inception
+      year: 2010
+
+  - collection: restaurants
+    id: taizu
+    values:
+      name: Taizu
+      city: Tel Aviv
+    extra:
+      occasion: date night
+
+links:
+  - from: [profiles, self]
+    to: [movies, inception-2010]
+    values:
+      rating: 9
+      at: 2026-08-01
+    props:
+      watched_with: partner
+      would_rewatch: true
+
+  - from: [profiles, anna]
+    to: [restaurants, taizu]
+    values:
+      rating: 8.5

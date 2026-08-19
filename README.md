@@ -1,0 +1,174 @@
+# fkey
+
+A personal taste database managed by AI agents over MCP. It stores movies,
+shows, books, music, wines, cocktails, public figures, and whatever collections
+the user and their agent add later.
+
+It can run locally over stdio with one SQLite file, or as an authenticated HTTP
+server with one isolated SQLite file per account. The evolving design lives in
+[`docs/PLAN.md`](docs/PLAN.md).
+
+## Data model
+
+- Each item type is a real SQLite table with typed fields plus explicit `extra`
+  JSON for long-tail observations.
+- `profiles` contains the user (`self`) and their family and friends.
+- A bare profile-to-item `link` stores that person's optional numeric rating,
+  first/latest activity date (`YYYY-MM-DD`), note, and explicit `props` JSON.
+- Named links express relationships such as `part_of`, `pairs_with`,
+  `directed`, and `acted_in`.
+- The agent may evolve the database through raw SQLite migrations; every
+  migration creates a restorable snapshot first.
+
+New databases are seeded with `movies`, `shows`, `books`, `music`, `wines`,
+`cocktails`, `people`, `profiles`, and `links`.
+
+## Setup
+
+Requires Python 3.13 or newer and [uv](https://docs.astral.sh/uv/). The
+development runtime is Python 3.14:
+
+```bash
+uv sync
+```
+
+Run the MCP server over stdio:
+
+```bash
+uv run fkey
+```
+
+The default database is `data/local/db.sqlite`. Override it with either:
+
+```bash
+uv run fkey --db /path/to/db.sqlite
+FKEY_DB=/path/to/db.sqlite uv run fkey
+```
+
+## MCP tools
+
+| Tool | Purpose |
+|---|---|
+| `describe_schema` | Live collections, fields, profiles, link kinds, rating scales, and recent migrations |
+| `add_record` / `get_record` / `update_record` / `delete_record` | Generic record CRUD |
+| `find_records` | Exact field filters and text search |
+| `add_link` / `remove_link` | Profile history and named relationships |
+| `query` | Read-only SQLite SELECT for arbitrary questions |
+| `create_collection` | Add a new item type with a minimal typed schema |
+| `migrate` | Apply transactional DDL/DML after taking a snapshot |
+| `list_snapshots` / `restore_snapshot` | Inspect and restore point-in-time snapshots |
+
+The tool schemas are static. Collection names and fields are validated against
+the live SQLite schema, so newly created or migrated collections work without
+refreshing the MCP tool catalog.
+
+## Use with Claude Code
+
+```bash
+claude mcp add fkey -- uv run --directory /Users/kuchin/Work/Mirable/fkey fkey
+```
+
+## Use locally with Claude Desktop
+
+Add this to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "fkey": {
+      "command": "uv",
+      "args": ["run", "--directory", "/Users/kuchin/Work/Mirable/fkey", "fkey"]
+    }
+  }
+}
+```
+
+This local stdio configuration does not use web accounts or OAuth. It continues
+to read `data/local/db.sqlite` unless `FKEY_DB` is set.
+
+## Authenticated HTTP
+
+Streamable HTTP requires OAuth for every MCP request. For local testing:
+
+```bash
+uv run fkey --http --port 8000
+```
+
+Behind an HTTPS tunnel or reverse proxy, set its public origin in `.env` and add
+`--public`. `FKEY_PUBLIC_URL` is the origin only; do not append `/mcp`.
+
+```bash
+FKEY_PUBLIC_URL=https://fkey.example.com
+uv run fkey --http --port 8000 --public
+```
+
+The remote MCP URL is then `https://fkey.example.com/mcp`. The server exposes
+OAuth protected-resource and authorization-server discovery, Dynamic Client
+Registration for compatible connectors, Authorization Code + PKCE login,
+one-hour access tokens, rotating 30-day refresh tokens, grant-family revocation
+when a rotated token is reused, and explicit revocation.
+
+### Invite-only signup
+
+Copy the example environment file and replace the signup code with a long,
+random value:
+
+```bash
+cp .env.example .env
+uv run fkey --http --port 8000
+```
+
+The signup form is available at `<public-origin>/signup`. A successful signup
+stores the account in `data/accounts.sqlite` and provisions its personal
+database below `data/users/<user-id>/db.sqlite`. Passwords are stored as salted
+scrypt hashes; the signup code is read from `FKEY_SIGNUP_CODE` and is never
+stored in the database.
+
+Each authenticated `/mcp` request is routed from the access token's user
+identity to that account's database. User IDs are never MCP tool arguments and
+accounts are not exposed through MCP.
+
+### Local Docker Compose
+
+The local Compose stack runs fkey with Redis-backed limits on signup, login,
+OAuth registration, authorization, token exchange, and revocation. It mounts
+the existing `data/` directory, so local accounts and databases are preserved.
+
+```bash
+cp .env.example .env  # if needed; set FKEY_SIGNUP_CODE
+make up
+```
+
+The app listens only on `127.0.0.1:8000`; Redis is reachable only inside the
+Compose network and stores disposable rate-limit counters. Stop any host-run
+fkey process on port 8000 before starting Compose. To stop the stack:
+
+```bash
+make down
+```
+
+For a Cloudflare tunnel, set `FKEY_PUBLIC_URL` in `.env` before starting the
+stack, then continue pointing the tunnel at `http://localhost:8000`.
+
+### Use remotely with Claude
+
+Remote connectors are configured in Claude under **Customize → Connectors →
+Add custom connector**, not in `claude_desktop_config.json`. Enter the public
+MCP URL and leave the advanced OAuth client fields empty so Claude can use
+Dynamic Client Registration. Choose **Connect**, then sign in through the fkey
+authorization page. The remote connector becomes available in Claude Desktop,
+web, and mobile.
+
+If the local stdio entry remains in `claude_desktop_config.json`, Claude Desktop
+will show both local and remote fkey tools. Remove or disable the local entry
+after confirming the remote connector works to avoid that duplication.
+
+## Tests
+
+```bash
+uv run python -m unittest discover -s tests -v
+```
+
+Integration scenarios use the normalized YAML fixture in
+`tests/fixtures/seed.yaml`. The test-only loader applies its collections,
+records, and links through the same `TasteDB` operations used by MCP tools.
