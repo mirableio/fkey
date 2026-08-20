@@ -1,0 +1,4 @@
+beta.fkey.app {
+	reverse_proxy 127.0.0.1:9040
+	encode zstd gzip
+}

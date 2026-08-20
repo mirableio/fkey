@@ -6,12 +6,12 @@ services:
     command: ["fkey", "--http", "--host", "0.0.0.0", "--port", "8000", "--public"]
     environment:
       FKEY_DATA_DIR: /app/data
-      FKEY_PUBLIC_URL: ${FKEY_PUBLIC_URL:-http://localhost:8000}
+      FKEY_PUBLIC_URL: https://beta.fkey.app
       FKEY_REDIS_URL: redis://redis:6379/0
       FKEY_SIGNUP_CODE: ${FKEY_SIGNUP_CODE:?set FKEY_SIGNUP_CODE in .env}
       FKEY_TRUST_PROXY_HEADERS: "true"
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:9040:8000"
     volumes:
       - ./data:/app/data
     depends_on:

@@ -150,6 +150,30 @@ make down
 For a Cloudflare tunnel, set `FKEY_PUBLIC_URL` in `.env` before starting the
 stack, then continue pointing the tunnel at `http://localhost:8000`.
 
+### Deploy beta.fkey.app
+
+Production runs on `beta.fkey.app` behind the host's Caddy service. The app is
+bound to host loopback on port 9040; only Caddy exposes it publicly. SQLite
+account and user databases persist in `/opt/apps/fkey/data`, while Redis holds
+only disposable rate-limit counters.
+
+Create the production environment and set a real `FKEY_SIGNUP_CODE`, then
+deploy the current working tree:
+
+```bash
+cp .env.prod.example .env.prod
+make deploy
+```
+
+Production Compose reads `.env.prod`; local Compose continues to read `.env`.
+For the first deploy only, `make deploy` falls back to `.env` if `.env.prod`
+does not exist, so an existing local signup code can bootstrap the server.
+
+The target defaults to `appuser@beta.fkey.app:/opt/apps/fkey` and uses normal
+SSH configuration and agent resolution. Override `DEPLOY_HOST` or
+`DEPLOY_PATH` on the `make` command when needed. The remote MCP URL is
+`https://beta.fkey.app/mcp` and signup is at `https://beta.fkey.app/signup`.
+
 ### Use remotely with Claude
 
 Remote connectors are configured in Claude under **Customize → Connectors →

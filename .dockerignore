@@ -1,7 +1,9 @@
 .git
 .venv
-.env
-data
 __pycache__
 *.pyc
-
+.env
+.env.*
+data
+build
+dist
