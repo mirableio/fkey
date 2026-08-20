@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from fkey.engine import TasteDB, slugify
+from fkey.migrations import SNAPSHOT_RETENTION
 
 
 class TasteDBTest(unittest.TestCase):
@@ -341,6 +342,22 @@ class TasteDBTest(unittest.TestCase):
         self.assertFalse(any(
             item["trigger"] == "restore-safety" for item in self.db.list_snapshots()
         ))
+
+    def test_snapshot_retention_and_oldest_restore(self) -> None:
+        created = [
+            self.db.snapshot("manual", str(index))
+            for index in range(SNAPSHOT_RETENTION + 2)
+        ]
+
+        snapshots = self.db.list_snapshots()
+        self.assertEqual(len(snapshots), SNAPSHOT_RETENTION)
+        self.assertFalse((self.db.backup_dir / created[0]).exists())
+        self.assertFalse((self.db.backup_dir / created[1]).exists())
+
+        oldest = snapshots[-1]["file"]
+        restored = self.db.restore_snapshot(oldest)
+        self.assertEqual(restored["restored"], oldest)
+        self.assertEqual(len(self.db.list_snapshots()), SNAPSHOT_RETENTION)
 
     def test_migration_snapshot_and_restore(self) -> None:
         wine = self.db.add_record(

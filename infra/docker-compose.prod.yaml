@@ -1,8 +1,12 @@
+x-fkey-image: &fkey-image
+  image: fkey-app
+  build:
+    context: .
+    dockerfile: Dockerfile
+
 services:
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *fkey-image
     command: ["fkey", "--http", "--host", "0.0.0.0", "--port", "8000", "--public"]
     environment:
       FKEY_DATA_DIR: /app/data
@@ -17,6 +21,17 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    restart: unless-stopped
+
+  backup:
+    <<: *fkey-image
+    command:
+      - sh
+      - -c
+      - while true; do fkey-backup --once-per-day /app/data /app/backups; sleep 21600; done
+    volumes:
+      - ./data:/app/data:ro
+      - ./backups:/app/backups
     restart: unless-stopped
 
   redis:

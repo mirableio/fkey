@@ -174,6 +174,44 @@ SSH configuration and agent resolution. Override `DEPLOY_HOST` or
 `DEPLOY_PATH` on the `make` command when needed. The remote MCP URL is
 `https://beta.fkey.app/mcp` and signup is at `https://beta.fkey.app/signup`.
 
+### Backups
+
+The production Compose stack takes one SQLite-safe backup per UTC day. Its
+small backup service checks every six hours and creates a set only when that
+day's set does not exist. Each set contains `accounts.sqlite`, every user
+database, and each user's available agent-created migration/restore snapshots.
+The engine keeps the newest 15 agent snapshots per user, and the backup service
+keeps the newest 7 daily sets in `/opt/apps/fkey/backups`. Its primary-data
+mount is read-only.
+
+Run an extra backup at any time with:
+
+```bash
+make backup
+```
+
+To restore a complete set, replace `<timestamp>` with a directory from
+`backups/`. Stop both data users, preserve the current directory as a safety
+copy, install the selected set as the whole new `data/`, then restart:
+
+```bash
+cd /opt/apps/fkey
+sudo docker compose -p fkey --project-directory . --env-file .env.prod \
+  -f infra/docker-compose.prod.yaml stop app backup
+sudo mv data data.before-restore
+sudo cp -a backups/<timestamp> data
+sudo docker compose -p fkey --project-directory . --env-file .env.prod \
+  -f infra/docker-compose.prod.yaml up -d app backup
+```
+
+Confirm login and user data before removing `data.before-restore`. Restoring
+`accounts.sqlite` also rolls OAuth state back: newer tokens require connector
+reauthorization, and token revocations made after the backup are undone.
+
+These local sets protect against application mistakes but remain on the same
+server disk. Encrypted off-site restic storage is still required for recovery
+from complete server or disk loss.
+
 ### Use remotely with Claude
 
 Remote connectors are configured in Claude under **Customize → Connectors →

@@ -16,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 fkey = "fkey.server:main"
+fkey-backup = "fkey.backup:main"
 
 [dependency-groups]
 dev = [

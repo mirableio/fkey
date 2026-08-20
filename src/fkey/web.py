@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import html
+import secrets
 from collections.abc import Mapping
 from urllib.parse import parse_qs
 
@@ -42,19 +43,36 @@ async def _read_form(request: Request, form_name: str) -> dict[str, str]:
     return {name: values[0] if values else "" for name, values in fields.items()}
 
 
-def _security_headers(callback_origin: str | None = None) -> dict[str, str]:
+def _security_headers(
+    callback_origin: str | None = None, script_nonce: str | None = None
+) -> dict[str, str]:
     form_action = "form-action 'self'"
     if callback_origin is not None:
         form_action += f" {callback_origin}"
+    script_source = f"; script-src 'nonce-{script_nonce}'" if script_nonce else ""
     return {
         "Cache-Control": "no-store",
         "Content-Security-Policy": (
             "default-src 'none'; style-src 'unsafe-inline'; "
-            f"{form_action}; frame-ancestors 'none'"
+            f"{form_action}; frame-ancestors 'none'{script_source}"
         ),
         "Referrer-Policy": "no-referrer",
         "X-Content-Type-Options": "nosniff",
     }
+
+
+def _submission_script(nonce: str) -> str:
+    return f"""
+      <script nonce="{nonce}">
+        document.querySelector("form")?.addEventListener("submit", (event) => {{
+          const button = event.currentTarget.querySelector('button[type="submit"]');
+          if (!button) return;
+          button.disabled = true;
+          button.setAttribute("aria-busy", "true");
+          button.textContent = button.dataset.submittingLabel;
+        }});
+      </script>
+    """
 
 
 def _page(
@@ -67,6 +85,8 @@ def _page(
     values = values or {}
     message = ""
     form = ""
+    script_nonce = None
+    submission_script = ""
     if success:
         message = """
             <div class="notice success" role="status">
@@ -75,6 +95,8 @@ def _page(
             </div>
         """
     else:
+        script_nonce = secrets.token_hex(16)
+        submission_script = _submission_script(script_nonce)
         if error:
             message = (
                 f'<div class="notice error" role="alert">{html.escape(error)}</div>'
@@ -99,7 +121,7 @@ def _page(
             <input id="signup_code" name="signup_code" type="password"
                    autocomplete="one-time-code" required>
 
-            <button type="submit">Create account</button>
+            <button type="submit" data-submitting-label="Creating account…">Create account</button>
           </form>
         """
 
@@ -134,8 +156,11 @@ def _page(
       button {{
         margin-top: 18px; border: 0; border-radius: 10px; padding: 13px 16px;
         background: #28623b; color: white; font: 700 15px inherit; cursor: pointer;
+        transition: background-color 120ms ease, opacity 120ms ease, transform 60ms ease;
       }}
-      button:hover {{ background: #1f5030; }}
+      button:hover:not(:disabled) {{ background: #1f5030; }}
+      button:not(:disabled):active {{ transform: translateY(1px); }}
+      button:disabled {{ cursor: wait; opacity: 0.72; }}
       .notice {{ margin-bottom: 22px; border-radius: 10px; padding: 13px 14px; line-height: 1.45; }}
       .error {{ color: #7b2525; background: #fff0ef; border: 1px solid #f1c8c5; }}
       .success {{ color: #205b34; background: #edf8ef; border: 1px solid #c5e3cb; }}
@@ -151,12 +176,13 @@ def _page(
       {form}
       <footer>Signup is invite-only.</footer>
     </main>
+    {submission_script}
   </body>
 </html>"""
     return HTMLResponse(
         document,
         status_code=status_code,
-        headers=_security_headers(),
+        headers=_security_headers(script_nonce=script_nonce),
     )
 
 
@@ -204,6 +230,7 @@ def _login_page(
     error: str = "",
     status_code: int = 200,
 ) -> HTMLResponse:
+    script_nonce = secrets.token_hex(16)
     message = (
         f'<div class="notice error" role="alert">{html.escape(error)}</div>'
         if error
@@ -243,8 +270,11 @@ def _login_page(
       button {{
         margin-top: 18px; border: 0; border-radius: 10px; padding: 13px 16px;
         background: #28623b; color: white; font: 700 15px inherit; cursor: pointer;
+        transition: background-color 120ms ease, opacity 120ms ease, transform 60ms ease;
       }}
-      button:hover {{ background: #1f5030; }}
+      button:hover:not(:disabled) {{ background: #1f5030; }}
+      button:not(:disabled):active {{ transform: translateY(1px); }}
+      button:disabled {{ cursor: wait; opacity: 0.72; }}
       .notice {{ margin-bottom: 20px; border-radius: 10px; padding: 13px 14px; line-height: 1.45; }}
       .error {{ color: #7b2525; background: #fff0ef; border: 1px solid #f1c8c5; }}
       footer {{ margin-top: 28px; color: #8a948d; font-size: 12px; line-height: 1.4; }}
@@ -266,16 +296,17 @@ def _login_page(
         <label for="password">Password</label>
         <input id="password" name="password" type="password"
                autocomplete="current-password" maxlength="1024" required>
-        <button type="submit">Connect fkey</button>
+        <button type="submit" data-submitting-label="Connecting…">Connect fkey</button>
       </form>
       <footer>Only connect clients you recognize. This grants access to read and update your fkey data.</footer>
     </main>
+    {_submission_script(script_nonce)}
   </body>
 </html>"""
     return HTMLResponse(
         document,
         status_code=status_code,
-        headers=_security_headers(callback_origin),
+        headers=_security_headers(callback_origin, script_nonce),
     )
 
 

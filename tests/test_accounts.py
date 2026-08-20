@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -68,6 +69,16 @@ class SignupPageTest(unittest.TestCase):
                 page = client.get("/signup")
                 self.assertEqual(page.status_code, 200)
                 self.assertIn("Create your account", page.text)
+                nonce = re.search(r'<script nonce="([a-f0-9]+)">', page.text)
+                self.assertIsNotNone(nonce)
+                self.assertIn(
+                    f"script-src 'nonce-{nonce.group(1)}'",
+                    page.headers["content-security-policy"],
+                )
+                self.assertIn(
+                    'data-submitting-label="Creating account…"', page.text
+                )
+                self.assertIn("button.disabled = true", page.text)
 
                 rejected = client.post(
                     "/signup",

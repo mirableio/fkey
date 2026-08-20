@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -97,6 +98,16 @@ class OAuthFlowTest(unittest.TestCase):
         expected_form_action = "form-action 'self' https://claude.ai"
         if expected_form_action not in login_page.headers["content-security-policy"]:
             raise AssertionError(login_page.headers["content-security-policy"])
+        nonce = re.search(r'<script nonce="([a-f0-9]+)">', login_page.text)
+        if nonce is None:
+            raise AssertionError("Login form is missing its submission script")
+        if (
+            f"script-src 'nonce-{nonce.group(1)}'"
+            not in login_page.headers["content-security-policy"]
+        ):
+            raise AssertionError(login_page.headers["content-security-policy"])
+        if 'data-submitting-label="Connecting…"' not in login_page.text:
+            raise AssertionError("Login form is missing its submitting label")
         login = client.post(
             "/oauth/login",
             data={"request": request_id, "email": email, "password": password},

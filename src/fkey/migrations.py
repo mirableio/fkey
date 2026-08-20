@@ -33,6 +33,7 @@ _DENIED_MIGRATION_PRAGMAS = {
     "trusted_schema",
     "writable_schema",
 }
+SNAPSHOT_RETENTION = 15
 
 
 def query(
@@ -75,12 +76,17 @@ def snapshot(db: TasteDB, trigger: str, label: str = "") -> str:
     suffix = f"--{slugify(label)}" if label else ""
     filename = f"{timestamp}--{trigger}{suffix}.sqlite"
     destination_path = db.backup_dir / filename
-    with db._lock, db.session() as source:
-        destination = sqlite3.connect(destination_path)
-        try:
-            source.backup(destination)
-        finally:
-            destination.close()
+    with db._lock:
+        with db.session() as source:
+            destination = sqlite3.connect(destination_path)
+            try:
+                source.backup(destination)
+            finally:
+                destination.close()
+        for old_snapshot in sorted(
+            db.backup_dir.glob("*.sqlite"), reverse=True
+        )[SNAPSHOT_RETENTION:]:
+            old_snapshot.unlink()
     return filename
 
 
@@ -337,25 +343,26 @@ def migrate(
 
 def list_snapshots(db: TasteDB) -> list[dict[str, str]]:
     snapshots: list[dict[str, str]] = []
-    for path in sorted(db.backup_dir.glob("*.sqlite"), reverse=True):
-        parts = path.stem.split("--")
-        snapshots.append(
-            {
-                "file": path.name,
-                "timestamp": parts[0],
-                "trigger": parts[1] if len(parts) > 1 else "unknown",
-                "label": parts[2] if len(parts) > 2 else "",
-            }
-        )
+    with db._lock:
+        for path in sorted(db.backup_dir.glob("*.sqlite"), reverse=True):
+            parts = path.stem.split("--")
+            snapshots.append(
+                {
+                    "file": path.name,
+                    "timestamp": parts[0],
+                    "trigger": parts[1] if len(parts) > 1 else "unknown",
+                    "label": parts[2] if len(parts) > 2 else "",
+                }
+            )
     return snapshots
 
 
 def restore_snapshot(db: TasteDB, filename: str) -> dict[str, Any]:
-    available = {item["file"] for item in list_snapshots(db)}
-    if filename not in available:
-        raise ValueError(f"Unknown snapshot {filename!r}. Use list_snapshots first.")
-    source = db.backup_dir / filename
     with db._lock:
+        available = {item["file"] for item in list_snapshots(db)}
+        if filename not in available:
+            raise ValueError(f"Unknown snapshot {filename!r}. Use list_snapshots first.")
+        source = db.backup_dir / filename
         temporary = db.path.with_suffix(".restore.tmp")
         shutil.copy2(source, temporary)
         candidate = sqlite3.connect(f"{temporary.resolve().as_uri()}?mode=ro", uri=True)

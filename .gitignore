@@ -17,3 +17,4 @@ wheels/
 
 # Local databases and snapshots
 data/
+backups/

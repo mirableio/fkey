@@ -283,7 +283,7 @@ last_at >= ...` — no special-purpose code.
 | `create_collection` | Create a new collection: name, fields with types + descriptions | For genuinely new types only (standard ones are pre-seeded): backbone columns (`id`, timestamps, `extra`) added automatically, `_meta` populated. Description teaches "start minimal — a few fields plus `extra`". |
 | `migrate` | Apply agent-authored DDL/DML with automatic snapshot | The single door for all schema evolution: promoting `extra` keys or `props` data to columns, reshaping, backfills, updating `_meta` descriptions and the kind registry. Deliberately one powerful tool rather than a suite of constrained schema operations — snapshots plus readable errors make mistakes recoverable, and helpers can be added later if dogfooding proves agents fumble. Contained to the user's own DB (see 3.5). |
 | `restore_snapshot` | Restore the DB to a named snapshot | Honest name: a point-in-time restore, not a logical rollback. Data written after the snapshot is lost (stated in the description); a safety snapshot is taken first, so restores are themselves restorable. |
-| `list_snapshots` | Available restore targets — scanned from snapshot filenames, each showing timestamp and trigger (migration / restore-safety / daily) | The restore-target picker. Migration *history* isn't a separate tool: recent migrations appear in `describe_schema`, and `_migrations` is queryable via `query`. |
+| `list_snapshots` | Available restore targets — scanned from snapshot filenames, each showing timestamp and trigger (migration / restore-safety) | The restore-target picker. Migration *history* isn't a separate tool: recent migrations appear in `describe_schema`, and `_migrations` is queryable via `query`. |
 
 Design rule: tool *descriptions* carry the agent playbook (start observations
 in `extra`; promote recurring keys; check `describe_schema` before migrating;
@@ -332,7 +332,6 @@ self-describing —
 ```
 2026-08-19T143200--migration--42--add-vintage.sqlite
 2026-08-19T151000--restore-safety.sqlite
-2026-08-20T020000--daily.sqlite
 ```
 
 — and `list_snapshots` scans them. No sidecar index to maintain or recover,
@@ -353,11 +352,14 @@ Notes:
 - SQLite `ALTER TABLE` is limited (no type changes, constrained drops); the
   standard workaround (create new table → copy → rename) is just statements,
   and the `migrate` tool description teaches the pattern.
-- Snapshots pruned by count/age (generous defaults; the files are small).
-- Snapshots also run on a daily timer per active user, independent of
-  migrations. Off-site backup syncs **snapshot files, never the live
-  `db.sqlite`** — in WAL mode, casually copying a live database can capture
-  an invalid state.
+- The engine keeps the newest 15 migration/restore snapshots per user. The
+  filename directory remains the restore catalog; older `_migrations`
+  references are historical and may outlive their restore files.
+- A Compose backup sidecar uses the SQLite backup API to create one complete
+  daily set containing `accounts.sqlite`, every user database, and their
+  retained agent snapshots. It keeps 7 local daily sets. Encrypted off-site
+  restic retention is a separate deployment step; it consumes completed sets,
+  never live databases.
 
 ### 3.6 Orientation and bootstrapping
 
@@ -418,9 +420,9 @@ actual deployment needs rather than expanding the account system in advance.
 
 - Docker image; single small VPS.
 - TLS via platform or Caddy; both connector platforms require HTTPS.
-- Persistent volume for `data/`; off-site backup = rsync/rclone of the
-  `backups/` snapshot files and catalogs only — never the live `db.sqlite`
-  (WAL mode makes a casual copy of a live DB unsafe).
+- Persistent bind mounts for `data/` and completed daily `backups/`; the
+  backup sidecar mounts primary data read-only and uses the SQLite backup API.
+  Off-site backup will use encrypted restic over completed sets only.
 - Structured logs; per-user request counts as the first metric.
 
 ## 4. Implementation plan
@@ -474,9 +476,10 @@ separate databases.
 
 ### Phase 3 — Deploy + polish
 
-1. Local Dockerfile/Compose and data volume are implemented; add TLS and the
-   deploy target of choice.
-2. Daily snapshots + off-site sync; snapshot pruning.
+1. Local Dockerfile/Compose, persistent data, TLS, and beta deployment are
+   implemented.
+2. Daily complete backup sets and 15-snapshot engine retention are implemented;
+   add encrypted off-site restic storage.
 3. Tune seed schemas and instruction wording from dogfooding across more
    collections (wine, cocktails, music).
 4. README/docs: setup for both platforms.

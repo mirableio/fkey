@@ -5,7 +5,7 @@ PROD_ENV ?= $(if $(wildcard .env.prod),.env.prod,.env)
 COMPOSE_LOCAL = docker compose -p fkey --project-directory . --env-file .env -f infra/docker-compose.local.yaml
 COMPOSE_PROD = docker compose -p fkey --project-directory . --env-file .env.prod -f infra/docker-compose.prod.yaml
 
-.PHONY: up down deploy
+.PHONY: up down deploy backup
 
 up:
 	$(COMPOSE_LOCAL) up --build
@@ -24,3 +24,6 @@ deploy:
 	ssh -t $(DEPLOY_HOST) 'bash -l -c "cd $(DEPLOY_PATH) && sudo DOCKER_BUILDKIT=1 BUILDX_NO_DEFAULT_ATTESTATIONS=1 $(COMPOSE_PROD) up -d --build"'
 	ssh $(DEPLOY_HOST) 'for i in $$(seq 1 30); do curl -fsS http://127.0.0.1:9040/signup >/dev/null && exit 0; sleep 1; done; echo "fkey did not become ready" >&2; exit 1'
 	ssh -t $(DEPLOY_HOST) 'sudo ln -sfn $(DEPLOY_PATH)/infra/Caddyfile /etc/caddy/sites-enabled/fkey.caddy && sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy'
+
+backup:
+	ssh -t $(DEPLOY_HOST) 'bash -l -c "cd $(DEPLOY_PATH) && sudo $(COMPOSE_PROD) exec -T backup fkey-backup /app/data /app/backups"'
