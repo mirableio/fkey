@@ -32,18 +32,12 @@ from fkey.web import oauth_login_page, signup_page
 DEFAULT_DB = Path("data/local/db.sqlite")
 DEFAULT_PUBLIC_URL = "http://127.0.0.1:8000"
 STATIC_INSTRUCTIONS = (
-    "Manage the user's personal taste database: movies, shows, books, music, "
-    "wines, cocktails, people (public figures such as directors and bands), "
-    "profiles (the user's own family and friends), plus any collections added "
-    "later. Two rules matter most. 1) Records hold intrinsic facts only "
-    "(title, year, ...); every personal rating, date, or reaction is a link "
-    "from a profile to the item — and the user themself is the profile with "
-    "id 'self'. 2) Ratings are numeric (default 1-10, decimals fine; "
-    "per-collection scales in describe_schema) — never invent one the user "
-    "didn't express. Long-tail observations go in the explicit extra/props "
-    "objects; when a key keeps recurring, promote it to a real column via "
-    "migrate. describe_schema is the authority whenever the live schema is "
-    "unclear."
+    "Records hold intrinsic facts; profile links hold personal ratings, dates, "
+    "and reactions. The user's own profile id is 'self'. Use describe_schema "
+    "for current collections, fields, profiles, link kinds, and rating scales. "
+    "Never invent a rating. Put deliberate long-tail data in extra or props. "
+    "Use add_multiple_records for create-only backfills, minimal=true when full "
+    "write results are unnecessary, and migrate only for schema evolution."
 )
 
 # Database content stays out of MCP instructions on purpose: instructions are
@@ -53,6 +47,32 @@ _READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=False)
 _ADDITIVE = ToolAnnotations(destructive_hint=False, open_world_hint=False)
 _OVERWRITE = ToolAnnotations(open_world_hint=False)
 _DESTRUCTIVE = ToolAnnotations(destructive_hint=True, open_world_hint=False)
+
+
+def _record_result(result: dict[str, Any], minimal: bool) -> dict[str, Any]:
+    return {"id": result["id"]} if minimal else result
+
+
+def _link_result(result: dict[str, Any], minimal: bool) -> dict[str, Any]:
+    if not minimal:
+        return result
+    return {
+        key: result[key]
+        for key in (
+            "from_collection",
+            "from_id",
+            "to_collection",
+            "to_id",
+            "kind",
+        )
+    }
+
+
+def _multiple_record_receipt(item: dict[str, Any]) -> dict[str, Any]:
+    receipt = {"id": item["record"]["id"]}
+    if "possible_duplicate_of" in item:
+        receipt["possible_duplicate_of"] = item["possible_duplicate_of"]
+    return receipt
 
 
 def _auth_settings(issuer_url: str, resource_url: str) -> AuthSettings:
@@ -196,13 +216,11 @@ async def oauth_login(request: Request) -> Response:
 
 @mcp.tool(annotations=_READ_ONLY)
 def describe_schema(collection: str | None = None) -> dict[str, Any]:
-    """Describe the live database schema and conventions.
+    """Describe the live schema and conventions.
 
-    With no collection, returns every collection with fields, row counts, the
-    profiles roster (who the user's people are), link kinds, rating scales, and
-    recent migrations. Pass a collection for deeper detail, common extra keys,
-    and a sample row to imitate. Call this at the start of a session and
-    whenever the live schema is unclear — it is the authority.
+    Without collection, returns collection summaries, profiles, links, kinds,
+    rating scales, and recent migrations. With collection, returns detailed
+    fields, common extra keys, and a sample.
     """
     return engine().describe_schema(collection)
 
@@ -212,20 +230,37 @@ def add_record(
     collection: str,
     values: dict[str, Any],
     extra: dict[str, Any] | None = None,
+    minimal: bool = False,
 ) -> dict[str, Any]:
-    """Add a record to a collection and return its generated id and stored fields.
+    """Add one record to an existing collection.
 
-    Records hold intrinsic facts only. Ratings, watch/read dates, and reactions
-    never go in a record — put them on add_link from a profile (the user
-    themself is the profile 'self'). Example:
-    add_record("movies", values={"title": "Dune", "year": 2021}).
-    The user's people are records too:
-    add_record("profiles", values={"name": "Anna", "relation": "wife"}).
-    values must use the collection's schema fields (unknown keys are errors
-    with suggestions); deliberate long-tail observations go in the explicit
-    extra object. Use create_collection first if the collection doesn't exist.
+    Records contain intrinsic facts; personal ratings, dates, and reactions
+    belong on profile links. values accepts live schema fields and extra holds
+    deliberate long-tail data. minimal returns only the generated id.
     """
-    return engine().add_record(collection, values, extra)
+    return _record_result(engine().add_record(collection, values, extra), minimal)
+
+
+@mcp.tool(annotations=_ADDITIVE)
+def add_multiple_records(
+    collection: str,
+    records: list[dict[str, Any]],
+    minimal: bool = True,
+) -> dict[str, Any]:
+    """Atomically create multiple records in one collection.
+
+    Each item has values, optional extra, and an optional profile_link with
+    profile_id (default self), values, and props. This always creates new
+    records; a matching slug is suffixed and flagged as a possible duplicate.
+    Shape: {"values": {...}, "extra": {...}, "profile_link": {"profile_id":
+    "self", "values": {...}, "props": {...}}}. Use update_record and add_link
+    to enrich existing records. All items succeed or none do. minimal returns
+    generated ids and duplicate warnings, and defaults to true.
+    """
+    results = engine().add_multiple_records(collection, records)
+    if minimal:
+        return {"items": [_multiple_record_receipt(item) for item in results]}
+    return {"items": results}
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -240,20 +275,24 @@ def update_record(
     record_id: str,
     values: dict[str, Any] | None = None,
     extra: dict[str, Any] | None = None,
+    minimal: bool = False,
 ) -> dict[str, Any]:
     """Partially update a record.
 
-    Only values keys supplied are changed; an explicit null clears an optional
-    field (required fields reject null). extra is merged into the current
-    object; a null extra value deletes that key.
+    Omitted fields stay unchanged; null clears optional fields. extra merges,
+    with null values deleting keys. minimal returns only the record id.
     """
-    return engine().update_record(collection, record_id, values, extra)
+    return _record_result(
+        engine().update_record(collection, record_id, values, extra), minimal
+    )
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
-def delete_record(collection: str, record_id: str) -> dict[str, Any]:
-    """Delete a record and its incoming and outgoing links."""
-    return engine().delete_record(collection, record_id)
+def delete_record(
+    collection: str, record_id: str, minimal: bool = False
+) -> dict[str, Any]:
+    """Delete a record and its links. minimal returns only the record id."""
+    return _record_result(engine().delete_record(collection, record_id), minimal)
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -263,12 +302,10 @@ def find_records(
     text: str | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """Find records by exact field values and/or free text.
+    """Find records using exact filters and/or case-insensitive text search.
 
-    filters is {"field": value} matched by equality (a null value matches
-    records where the field is unset). text is a case-insensitive substring
-    search across all text columns. Returns newest-updated first, up to limit.
-    Example: find_records("movies", filters={"year": 2021}, text="dune").
+    Returns newest-updated first, up to limit. A null filter matches an unset
+    field.
     """
     return engine().find_records(collection, filters, text, limit)
 
@@ -282,25 +319,21 @@ def add_link(
     kind: str | None = None,
     values: dict[str, Any] | None = None,
     props: dict[str, Any] | None = None,
+    minimal: bool = False,
 ) -> dict[str, Any]:
-    """Record a relationship, or a person's history with an item (upserts).
+    """Upsert a link by endpoints and optional kind.
 
-    This is where all personal taste lives. The user themself is the profile
-    'self' — "I'd give Dune an 8.5, watched it on 2026-08-18" is:
-    add_link("profiles", "self", "movies", "dune-2021",
-             values={"rating": 8.5, "at": "2026-08-18"}).
-    Omit kind for these profile-to-item history links. values may contain
-    rating (numeric; scales in describe_schema — never invent a rating the
-    person didn't express), at (YYYY-MM-DD), and note. Calling again updates
-    the same link: at maintains first_at/last_at server-side, omitted
-    rating/note are preserved, explicit null clears them, and props (explicit
-    long-tail JSON) merges with null deleting a key.
-    For any other relationship pass a registered kind — part_of, pairs_with,
-    recommended, directed, acted_in, wrote, performed, made — and register new
-    kinds via migrate first.
+    Omit kind only for profile-to-item history; for the user's own history,
+    from_id is 'self'. values accepts rating, at (YYYY-MM-DD), and note; at
+    maintains first_at/last_at. Omitted values stay unchanged, null clears, and
+    props merges with null deleting keys. Other relationships require a kind
+    registered in the live schema. minimal returns only the link identity.
     """
-    return engine().add_link(
-        from_collection, from_id, to_collection, to_id, kind, values, props
+    return _link_result(
+        engine().add_link(
+            from_collection, from_id, to_collection, to_id, kind, values, props
+        ),
+        minimal,
     )
 
 
@@ -311,9 +344,15 @@ def remove_link(
     to_collection: str,
     to_id: str,
     kind: str | None = None,
+    minimal: bool = False,
 ) -> dict[str, Any]:
-    """Remove the exact relationship identified by its endpoints and optional kind."""
-    return engine().remove_link(from_collection, from_id, to_collection, to_id, kind)
+    """Remove an exact link. minimal returns only its identity."""
+    return _link_result(
+        engine().remove_link(
+            from_collection, from_id, to_collection, to_id, kind
+        ),
+        minimal,
+    )
 
 
 @mcp.tool(name="query", annotations=_READ_ONLY)
@@ -322,15 +361,10 @@ def query_database(
     parameters: list[Any] | None = None,
     limit: int = 200,
 ) -> dict[str, Any]:
-    """Run a read-only SQLite SELECT for arbitrary cross-collection questions.
+    """Run a read-only parameterized SQLite SELECT or WITH query.
 
-    Important links-table encoding: bare personal-history links store
-    kind = '' (empty string, NOT NULL) — filter with kind = ''. Example,
-    "movies Anna rated 8+ that Dad hasn't seen": join movies to links on
-    to_collection = 'movies' AND to_id = movies.id AND kind = '' with
-    from_id for Anna, excluding ids Dad has links to. Use describe_schema
-    first when table or field names are unclear. Parameters use SQLite ?
-    placeholders. Results are capped by limit.
+    Bare profile-history links store kind = ''. Parameters use ? placeholders;
+    results are capped by limit. Use describe_schema when names are uncertain.
     """
     return engine().query(sql, parameters, limit)
 
@@ -340,53 +374,53 @@ def create_collection(
     name: str,
     description: str,
     fields: list[dict[str, Any]],
+    minimal: bool = False,
 ) -> dict[str, Any]:
-    """Create a genuinely new collection (item type) with a few typed fields.
+    """Create a new collection with a few typed intrinsic fields.
 
-    For new kinds of things the user tracks (boardgames, restaurants, ...);
-    the standard collections already exist. Each field is {"name", "type",
-    "description", optional "required"}; types: text, integer, real, boolean,
-    date, datetime. Fields are for intrinsic facts only — personal history
-    stays on links. The id, timestamps, and extra backbone are added
-    automatically. Start minimal; long-tail observations earn structure later.
-    Example: create_collection("restaurants", "Restaurants worth remembering",
-    fields=[{"name": "name", "type": "text", "required": true},
-            {"name": "city", "type": "text"}]).
+    Field types are text, integer, real, boolean, date, or datetime. id,
+    timestamps, and extra are added automatically. minimal returns its name.
     """
-    return engine().create_collection(name, description, fields)
+    result = engine().create_collection(name, description, fields)
+    return {"name": result["name"]} if minimal else result
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
-def migrate(description: str, statements: list[str]) -> dict[str, Any]:
-    """Apply agent-authored SQLite DDL/DML after taking a restorable snapshot.
+def migrate(
+    description: str, statements: list[str], minimal: bool = False
+) -> dict[str, Any]:
+    """Apply schema evolution after taking a restorable snapshot.
 
-    Statements run in one transaction. On error, the transaction is rolled back
-    and the snapshot is kept. Use this for schema evolution (promoting recurring
-    extra/props keys to real columns, backfills, reshaping) and for deliberate
-    _meta updates:
-    - new link kind: INSERT INTO _meta (scope, collection, name, description)
-      VALUES ('link_kind', '', '<kind>', '<meaning>')
-    - rating scale: scope='rating_scale', collection='<target>',
-      name='default', value_json='{"min":1,"max":5}'
-    Returns the resulting live schema.
+    Never use this for ordinary record creation or updates: use add_record or
+    create-only add_multiple_records, then update_record and add_link to enrich
+    existing records. Reserve migrate for schema changes, related backfills,
+    and _meta updates. Statements run in one transaction; failures roll back
+    and keep the snapshot. minimal omits the resulting full schema.
     """
-    return engine().migrate(description, statements)
+    result = engine().migrate(description, statements)
+    if not minimal:
+        return result
+    return {
+        key: result[key] for key in ("migration_id", "snapshot", "warnings")
+    }
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
-def restore_snapshot(snapshot: str) -> dict[str, Any]:
-    """Restore the database to a named point-in-time snapshot.
+def restore_snapshot(snapshot: str, minimal: bool = False) -> dict[str, Any]:
+    """Restore a validated point-in-time snapshot after taking a safety snapshot.
 
-    Data written after that snapshot is lost. A safety snapshot of the current state
-    is taken first, so this restore can itself be reversed. Use list_snapshots to
-    obtain an exact snapshot filename.
+    Data written after the target is lost. Use list_snapshots for exact names.
+    minimal omits the resulting full schema.
     """
-    return engine().restore_snapshot(snapshot)
+    result = engine().restore_snapshot(snapshot)
+    if not minimal:
+        return result
+    return {key: result[key] for key in ("restored", "safety_snapshot")}
 
 
 @mcp.tool(annotations=_READ_ONLY)
 def list_snapshots() -> list[dict[str, str]]:
-    """List available point-in-time restore targets, newest first."""
+    """List restore targets, newest first."""
     return engine().list_snapshots()
 
 

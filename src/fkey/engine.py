@@ -17,6 +17,7 @@ from typing import Any
 
 IDENTIFIER_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 BACKBONE_FIELDS = {"id", "created_at", "updated_at", "extra"}
+BUSY_TIMEOUT_MS = 30_000
 
 
 def utc_now() -> str:
@@ -72,7 +73,7 @@ class TasteDB:
             self.bootstrap()
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=30)
+        connection = sqlite3.connect(self.path, timeout=BUSY_TIMEOUT_MS / 1000)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
@@ -150,6 +151,13 @@ class TasteDB:
         return record_ops.add_record(
             self, collection, values, extra, record_id=record_id
         )
+
+    def add_multiple_records(
+        self,
+        collection: str,
+        records: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return record_ops.add_multiple_records(self, collection, records)
 
     def get_record(self, collection: str, record_id: str) -> dict[str, Any]:
         return record_ops.get_record(self, collection, record_id)

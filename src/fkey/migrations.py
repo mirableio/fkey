@@ -34,6 +34,15 @@ _DENIED_MIGRATION_PRAGMAS = {
     "writable_schema",
 }
 SNAPSHOT_RETENTION = 15
+SNAPSHOT_LABEL_MAX_BYTES = 48
+
+
+def _snapshot_label(value: str) -> str:
+    slug = slugify(value)
+    encoded = slug.encode("utf-8")
+    if len(encoded) <= SNAPSHOT_LABEL_MAX_BYTES:
+        return slug
+    return encoded[:SNAPSHOT_LABEL_MAX_BYTES].decode("utf-8", "ignore").rstrip("-")
 
 
 def query(
@@ -73,10 +82,11 @@ def query(
 
 def snapshot(db: TasteDB, trigger: str, label: str = "") -> str:
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%S%f")
-    suffix = f"--{slugify(label)}" if label else ""
+    suffix = f"--{_snapshot_label(label)}" if label else ""
     filename = f"{timestamp}--{trigger}{suffix}.sqlite"
-    destination_path = db.backup_dir / filename
     with db._lock:
+        db.backup_dir.mkdir(parents=True, exist_ok=True)
+        destination_path = db.backup_dir / filename
         with db.session() as source:
             destination = sqlite3.connect(destination_path)
             try:

@@ -383,6 +383,12 @@ def describe_schema(db: TasteDB, collection: str | None = None) -> dict[str, Any
                     "name": "default",
                     "value_json": {"min": 1, "max": 10, "anchors": "optional text"},
                 },
+                "link_kind_convention": {
+                    "scope": "link_kind",
+                    "collection": "",
+                    "name": "kind name",
+                    "description": "meaning of the relationship",
+                },
             },
         }
 

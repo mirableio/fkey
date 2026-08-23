@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
-from fkey.engine import TasteDB, slugify
-from fkey.migrations import SNAPSHOT_RETENTION
+from fkey.engine import BUSY_TIMEOUT_MS, TasteDB, slugify
+from fkey.migrations import SNAPSHOT_LABEL_MAX_BYTES, SNAPSHOT_RETENTION
 
 
 class TasteDBTest(unittest.TestCase):
@@ -57,6 +59,98 @@ class TasteDBTest(unittest.TestCase):
         self.assertNotIn("format", updated["extra"])
         self.assertEqual(updated["extra"]["mood"], "hopeful")
         self.assertTrue(updated["extra"]["rewatch"])
+
+    def test_add_multiple_records_is_atomic_and_can_add_profile_links(self) -> None:
+        anna = self.db.add_record(
+            "profiles", {"name": "Anna", "relation": "friend"}
+        )
+        results = self.db.add_multiple_records(
+            "wines",
+            [
+                {
+                    "values": {
+                        "name": "Example Red",
+                        "vintage": 2021,
+                        "country": "France",
+                    },
+                    "extra": {"grape": "Syrah"},
+                    "profile_link": {
+                        "values": {"rating": 8.5, "at": "2026-08-20"}
+                    },
+                },
+                {
+                    "values": {"name": "Example White", "vintage": 2022},
+                    "profile_link": {
+                        "profile_id": anna["id"],
+                        "values": {"note": "Fresh"},
+                    },
+                },
+            ],
+        )
+
+        self.assertEqual(
+            [item["record"]["id"] for item in results],
+            ["example-red-2021", "example-white-2022"],
+        )
+        self.assertEqual(results[0]["link"]["from_id"], "self")
+        self.assertEqual(results[0]["link"]["rating"], 8.5)
+        self.assertEqual(results[1]["link"]["from_id"], anna["id"])
+
+        duplicate = self.db.add_multiple_records(
+            "wines",
+            [{"values": {"name": "Example Red", "vintage": 2021}}],
+        )[0]
+        self.assertEqual(duplicate["record"]["id"], "example-red-2021-2")
+        self.assertEqual(
+            duplicate["possible_duplicate_of"], "example-red-2021"
+        )
+
+        with self.assertRaisesRegex(ValueError, r"records\[1\].*Unknown field"):
+            self.db.add_multiple_records(
+                "wines",
+                [
+                    {"values": {"name": "Rolled Back"}},
+                    {"values": {"name": "Invalid", "producer": "Unknown field"}},
+                ],
+            )
+        self.assertEqual(
+            self.db.query(
+                "SELECT COUNT(*) AS count FROM wines WHERE name = 'Rolled Back'"
+            )["rows"],
+            [{"count": 0}],
+        )
+
+    def test_connections_wait_for_busy_database(self) -> None:
+        holder = self.db.connect()
+        holder.execute("BEGIN IMMEDIATE")
+        contender = TasteDB(self.path)
+        started = threading.Event()
+        errors: list[Exception] = []
+
+        def write_after_lock() -> None:
+            started.set()
+            try:
+                contender.add_record("movies", {"title": "Waited"})
+            except Exception as error:  # pragma: no cover - asserted below
+                errors.append(error)
+
+        thread = threading.Thread(target=write_after_lock)
+        thread.start()
+        started.wait()
+        try:
+            timeout = holder.execute("PRAGMA busy_timeout").fetchone()[0]
+            time.sleep(0.05)
+            holder.rollback()
+        finally:
+            holder.close()
+        thread.join(timeout=2)
+
+        self.assertEqual(timeout, BUSY_TIMEOUT_MS)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(
+            contender.get_record("movies", "waited")["record"]["title"], "Waited"
+        )
 
     def test_link_upsert_keeps_first_and_latest_activity(self) -> None:
         movie = self.db.add_record("movies", {"title": "Dune", "year": 2021})
@@ -137,6 +231,18 @@ class TasteDBTest(unittest.TestCase):
             "rating_scale_convention"
         ]
         self.assertEqual(convention["name"], "default")
+        link_kind = self.db.describe_schema()["meta_table"][
+            "link_kind_convention"
+        ]
+        self.assertEqual(
+            link_kind,
+            {
+                "scope": "link_kind",
+                "collection": "",
+                "name": "kind name",
+                "description": "meaning of the relationship",
+            },
+        )
 
     def test_movie_night_query(self) -> None:
         anna = self.db.add_record("profiles", {"name": "Anna", "relation": "wife"})
@@ -358,6 +464,36 @@ class TasteDBTest(unittest.TestCase):
         restored = self.db.restore_snapshot(oldest)
         self.assertEqual(restored["restored"], oldest)
         self.assertEqual(len(self.db.list_snapshots()), SNAPSHOT_RETENTION)
+
+    def test_snapshot_recreates_missing_backup_directory(self) -> None:
+        self.db.backup_dir.rmdir()
+
+        snapshot = self.db.snapshot("manual")
+
+        self.assertTrue((self.db.backup_dir / snapshot).is_file())
+
+    def test_migration_snapshot_shortens_long_description(self) -> None:
+        for description in ("long migration " * 30, "東京" * 100):
+            result = self.db.migrate(description, ["SELECT 1"])
+            snapshot = result["snapshot"]
+            label = Path(snapshot).stem.split("--", 2)[2]
+
+            self.assertLessEqual(
+                len(label.encode("utf-8")), SNAPSHOT_LABEL_MAX_BYTES
+            )
+            self.assertTrue(label.startswith(f"{result['migration_id']}-"))
+            self.assertTrue((self.db.backup_dir / snapshot).is_file())
+
+        descriptions = self.db.query(
+            "SELECT description FROM _migrations ORDER BY id"
+        )["rows"]
+        self.assertEqual(
+            descriptions,
+            [
+                {"description": "long migration " * 30},
+                {"description": "東京" * 100},
+            ],
+        )
 
     def test_migration_snapshot_and_restore(self) -> None:
         wine = self.db.add_record(

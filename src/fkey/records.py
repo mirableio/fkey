@@ -68,6 +68,16 @@ def _unique_id(
     return candidate
 
 
+def _record_base(collection: str, values: dict[str, Any]) -> str:
+    display = str(
+        values.get("title")
+        or values.get("name")
+        or collection.removesuffix("s")
+    )
+    year = values.get("year") or values.get("vintage")
+    return slugify(f"{display}-{year}" if year is not None else display)
+
+
 def _activity_date(value: Any) -> str:
     if not isinstance(value, str):
         raise ValueError("at must be an ISO date in YYYY-MM-DD format")
@@ -116,31 +126,112 @@ def add_record(
     record_id: str | None = None,
 ) -> dict[str, Any]:
     with db._lock, db.session() as connection:
-        db._require_collection(connection, collection)
-        _validate_values(db, connection, collection, values)
-        display = str(
-            values.get("title")
-            or values.get("name")
-            or collection.removesuffix("s")
+        return _add_record(
+            db, connection, collection, values, extra, record_id=record_id
         )
-        year = values.get("year") or values.get("vintage")
-        base = slugify(f"{display}-{year}" if year is not None else display)
-        if record_id is None:
-            record_id = _unique_id(connection, collection, base)
-        elif slugify(record_id) != record_id:
-            raise ValueError("record_id must be a canonical lowercase slug")
 
-        now = utc_now()
-        columns = ["id", *values.keys(), "created_at", "updated_at", "extra"]
-        params = [record_id, *values.values(), now, now, json_dumps(extra or {})]
-        column_sql = ", ".join(quote_identifier(column) for column in columns)
-        placeholders = ", ".join("?" for _ in params)
-        connection.execute(
-            f"INSERT INTO {quote_identifier(collection)} ({column_sql}) "
-            f"VALUES ({placeholders})",
-            params,
-        )
-        return _get_record_row(connection, collection, record_id)
+
+def _add_record(
+    db: TasteDB,
+    connection: sqlite3.Connection,
+    collection: str,
+    values: dict[str, Any],
+    extra: dict[str, Any] | None = None,
+    *,
+    record_id: str | None = None,
+) -> dict[str, Any]:
+    db._require_collection(connection, collection)
+    _validate_values(db, connection, collection, values)
+    base = _record_base(collection, values)
+    if record_id is None:
+        record_id = _unique_id(connection, collection, base)
+    elif slugify(record_id) != record_id:
+        raise ValueError("record_id must be a canonical lowercase slug")
+
+    now = utc_now()
+    columns = ["id", *values.keys(), "created_at", "updated_at", "extra"]
+    params = [record_id, *values.values(), now, now, json_dumps(extra or {})]
+    column_sql = ", ".join(quote_identifier(column) for column in columns)
+    placeholders = ", ".join("?" for _ in params)
+    connection.execute(
+        f"INSERT INTO {quote_identifier(collection)} ({column_sql}) "
+        f"VALUES ({placeholders})",
+        params,
+    )
+    return _get_record_row(connection, collection, record_id)
+
+
+def add_multiple_records(
+    db: TasteDB,
+    collection: str,
+    records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not records:
+        raise ValueError("add_multiple_records requires at least one record")
+
+    results: list[dict[str, Any]] = []
+    with db._lock, db.session() as connection:
+        db._require_collection(connection, collection)
+        for index, item in enumerate(records):
+            try:
+                if not isinstance(item, dict):
+                    raise ValueError("must be an object")
+                unknown = set(item) - {"values", "extra", "profile_link"}
+                if unknown:
+                    raise ValueError(f"unknown field {sorted(unknown)[0]!r}")
+                values = item.get("values")
+                if not isinstance(values, dict):
+                    raise ValueError("values must be an object")
+                extra = item.get("extra")
+                if extra is not None and not isinstance(extra, dict):
+                    raise ValueError("extra must be an object")
+
+                base = _record_base(collection, values)
+                possible_duplicate = connection.execute(
+                    f"SELECT 1 FROM {quote_identifier(collection)} WHERE id = ?",
+                    (base,),
+                ).fetchone()
+                record = _add_record(db, connection, collection, values, extra)
+                link = None
+                if "profile_link" in item:
+                    profile_link = item["profile_link"]
+                    if not isinstance(profile_link, dict):
+                        raise ValueError("profile_link must be an object")
+                    unknown_link = set(profile_link) - {
+                        "profile_id",
+                        "values",
+                        "props",
+                    }
+                    if unknown_link:
+                        raise ValueError(
+                            f"unknown profile_link field {sorted(unknown_link)[0]!r}"
+                        )
+                    profile_id = profile_link.get("profile_id", "self")
+                    if not isinstance(profile_id, str) or not profile_id:
+                        raise ValueError("profile_link.profile_id must be a string")
+                    link_values = profile_link.get("values")
+                    if link_values is not None and not isinstance(link_values, dict):
+                        raise ValueError("profile_link.values must be an object")
+                    props = profile_link.get("props")
+                    if props is not None and not isinstance(props, dict):
+                        raise ValueError("profile_link.props must be an object")
+                    link = _add_link(
+                        db,
+                        connection,
+                        "profiles",
+                        profile_id,
+                        collection,
+                        record["id"],
+                        values=link_values,
+                        props=props,
+                    )
+                result = {"record": record, "link": link}
+                if possible_duplicate is not None:
+                    result["possible_duplicate_of"] = base
+                results.append(result)
+            except (TypeError, ValueError, sqlite3.Error) as error:
+                raise ValueError(f"records[{index}] failed: {error}") from error
+    return results
 
 
 def get_record(db: TasteDB, collection: str, record_id: str) -> dict[str, Any]:
@@ -301,6 +392,31 @@ def add_link(
     values: dict[str, Any] | None = None,
     props: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    with db._lock, db.session() as connection:
+        return _add_link(
+            db,
+            connection,
+            from_collection,
+            from_id,
+            to_collection,
+            to_id,
+            kind,
+            values,
+            props,
+        )
+
+
+def _add_link(
+    db: TasteDB,
+    connection: sqlite3.Connection,
+    from_collection: str,
+    from_id: str,
+    to_collection: str,
+    to_id: str,
+    kind: str | None = None,
+    values: dict[str, Any] | None = None,
+    props: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     values = values or {}
     allowed_values = {"rating", "at", "note"}
     unknown = set(values) - allowed_values
@@ -309,112 +425,111 @@ def add_link(
     stored_kind = kind or ""
     at = _activity_date(values["at"]) if values.get("at") is not None else None
 
-    with db._lock, db.session() as connection:
-        if not _record_exists(db, connection, from_collection, from_id):
-            raise ValueError(f"No record {from_id!r} in {from_collection!r}.")
-        if not _record_exists(db, connection, to_collection, to_id):
-            raise ValueError(f"No record {to_id!r} in {to_collection!r}.")
-        if not stored_kind and (
-            from_collection != "profiles" or to_collection == "profiles"
-        ):
+    if not _record_exists(db, connection, from_collection, from_id):
+        raise ValueError(f"No record {from_id!r} in {from_collection!r}.")
+    if not _record_exists(db, connection, to_collection, to_id):
+        raise ValueError(f"No record {to_id!r} in {to_collection!r}.")
+    if not stored_kind and (
+        from_collection != "profiles" or to_collection == "profiles"
+    ):
+        raise ValueError(
+            "kind may be omitted only for a profile-to-non-profile link."
+        )
+    if stored_kind:
+        known = connection.execute(
+            """
+            SELECT 1 FROM _meta
+            WHERE scope = 'link_kind' AND collection = '' AND name = ?
+            """,
+            (stored_kind,),
+        ).fetchone()
+        if known is None:
+            rows = connection.execute(
+                "SELECT name FROM _meta WHERE scope = 'link_kind' ORDER BY name"
+            ).fetchall()
+            choices = [row["name"] for row in rows]
+            suggestion = difflib.get_close_matches(stored_kind, choices, n=1)
+            hint = f" Did you mean {suggestion[0]!r}?" if suggestion else ""
             raise ValueError(
-                "kind may be omitted only for a profile-to-non-profile link."
+                f"Unknown link kind {stored_kind!r}.{hint} "
+                "Register a new kind in _meta via migrate."
             )
-        if stored_kind:
-            known = connection.execute(
-                """
-                SELECT 1 FROM _meta
-                WHERE scope = 'link_kind' AND collection = '' AND name = ?
-                """,
-                (stored_kind,),
-            ).fetchone()
-            if known is None:
-                rows = connection.execute(
-                    "SELECT name FROM _meta WHERE scope = 'link_kind' ORDER BY name"
-                ).fetchall()
-                choices = [row["name"] for row in rows]
-                suggestion = difflib.get_close_matches(stored_kind, choices, n=1)
-                hint = f" Did you mean {suggestion[0]!r}?" if suggestion else ""
-                raise ValueError(
-                    f"Unknown link kind {stored_kind!r}.{hint} "
-                    "Register a new kind in _meta via migrate."
-                )
 
-        if "rating" in values and values["rating"] is not None:
-            rating = float(values["rating"])
-            scale = _rating_scale(connection, to_collection)
-            if not float(scale["min"]) <= rating <= float(scale["max"]):
-                raise ValueError(
-                    f"rating must be between {scale['min']} and {scale['max']} "
-                    f"for {to_collection}"
-                )
+    if "rating" in values and values["rating"] is not None:
+        rating = float(values["rating"])
+        scale = _rating_scale(connection, to_collection)
+        if not float(scale["min"]) <= rating <= float(scale["max"]):
+            raise ValueError(
+                f"rating must be between {scale['min']} and {scale['max']} "
+                f"for {to_collection}"
+            )
 
-        key = (from_collection, from_id, to_collection, to_id, stored_kind)
-        existing = connection.execute(
+    key = (from_collection, from_id, to_collection, to_id, stored_kind)
+    existing = connection.execute(
+        """
+        SELECT * FROM links
+        WHERE from_collection = ? AND from_id = ?
+          AND to_collection = ? AND to_id = ? AND kind = ?
+        """,
+        key,
+    ).fetchone()
+    now = utc_now()
+    if existing is None:
+        connection.execute(
             """
-            SELECT * FROM links
-            WHERE from_collection = ? AND from_id = ?
-              AND to_collection = ? AND to_id = ? AND kind = ?
+            INSERT INTO links (
+                from_collection, from_id, to_collection, to_id, kind,
+                rating, first_at, last_at, note, props, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            key,
-        ).fetchone()
-        now = utc_now()
-        if existing is None:
-            connection.execute(
-                """
-                INSERT INTO links (
-                    from_collection, from_id, to_collection, to_id, kind,
-                    rating, first_at, last_at, note, props, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    *key,
-                    values.get("rating"),
-                    at,
-                    at,
-                    values.get("note"),
-                    _merge_json(None, props),
-                    now,
-                    now,
-                ),
+            (
+                *key,
+                values.get("rating"),
+                at,
+                at,
+                values.get("note"),
+                _merge_json(None, props),
+                now,
+                now,
+            ),
+        )
+    else:
+        assignments = ["updated_at = ?"]
+        params: list[Any] = [now]
+        for field in ("rating", "note"):
+            if field in values:
+                assignments.append(f"{field} = ?")
+                params.append(values[field])
+        if at is not None:
+            first_at = existing["first_at"]
+            last_at = existing["last_at"]
+            assignments.extend(["first_at = ?", "last_at = ?"])
+            params.extend(
+                [
+                    min(first_at, at) if first_at else at,
+                    max(last_at, at) if last_at else at,
+                ]
             )
-        else:
-            assignments = ["updated_at = ?"]
-            params: list[Any] = [now]
-            for field in ("rating", "note"):
-                if field in values:
-                    assignments.append(f"{field} = ?")
-                    params.append(values[field])
-            if at is not None:
-                first_at = existing["first_at"]
-                last_at = existing["last_at"]
-                assignments.extend(["first_at = ?", "last_at = ?"])
-                params.extend(
-                    [
-                        min(first_at, at) if first_at else at,
-                        max(last_at, at) if last_at else at,
-                    ]
-                )
-            if props is not None:
-                assignments.append("props = ?")
-                params.append(_merge_json(existing["props"], props))
-            connection.execute(
-                f"UPDATE links SET {', '.join(assignments)} "
-                "WHERE from_collection = ? AND from_id = ? "
-                "AND to_collection = ? AND to_id = ? AND kind = ?",
-                [*params, *key],
-            )
+        if props is not None:
+            assignments.append("props = ?")
+            params.append(_merge_json(existing["props"], props))
+        connection.execute(
+            f"UPDATE links SET {', '.join(assignments)} "
+            "WHERE from_collection = ? AND from_id = ? "
+            "AND to_collection = ? AND to_id = ? AND kind = ?",
+            [*params, *key],
+        )
 
-        row = connection.execute(
-            """
-            SELECT * FROM links
-            WHERE from_collection = ? AND from_id = ?
-              AND to_collection = ? AND to_id = ? AND kind = ?
-            """,
-            key,
-        ).fetchone()
-        assert row is not None
-        return decode_link(row)
+    row = connection.execute(
+        """
+        SELECT * FROM links
+        WHERE from_collection = ? AND from_id = ?
+          AND to_collection = ? AND to_id = ? AND kind = ?
+        """,
+        key,
+    ).fetchone()
+    assert row is not None
+    return decode_link(row)
 
 
 def remove_link(

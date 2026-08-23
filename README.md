@@ -51,12 +51,19 @@ FKEY_DB=/path/to/db.sqlite uv run fkey
 |---|---|
 | `describe_schema` | Live collections, fields, profiles, link kinds, rating scales, and recent migrations |
 | `add_record` / `get_record` / `update_record` / `delete_record` | Generic record CRUD |
+| `add_multiple_records` | Atomically create a same-collection batch, with optional profile links |
 | `find_records` | Exact field filters and text search |
 | `add_link` / `remove_link` | Profile history and named relationships |
 | `query` | Read-only SQLite SELECT for arbitrary questions |
 | `create_collection` | Add a new item type with a minimal typed schema |
 | `migrate` | Apply transactional DDL/DML after taking a snapshot |
 | `list_snapshots` / `restore_snapshot` | Inspect and restore point-in-time snapshots |
+
+Write tools accept `minimal: true` when only identifiers and essential safety
+details are needed. `add_multiple_records` defaults to minimal output and is
+create-only; use `update_record` and `add_link` to enrich existing records.
+Suffixed ids are returned with `possible_duplicate_of` so imports can review
+potential collisions without blocking legitimately distinct records.
 
 The tool schemas are static. Collection names and fields are validated against
 the live SQLite schema, so newly created or migrated collections work without

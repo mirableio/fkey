@@ -110,11 +110,12 @@ A single multi-tenant MCP server ("one connector, many collections") where:
 
 | Decision | Choice | Why |
 |---|---|---|
-| One MCP server vs one per collection type | **One server** | Profiles/links must span collections (separate servers can't join); ~13 generic tools beat 30+ near-duplicates in the agent's context; one connector per user per platform. Type-specific tailored tools would go stale anyway once schemas evolve at runtime. |
+| One MCP server vs one per collection type | **One server** | Profiles/links must span collections (separate servers can't join); ~14 generic tools beat 30+ near-duplicates in the agent's context; one connector per user per platform. Type-specific tailored tools would go stale anyway once schemas evolve at runtime. |
 | Storage model | **Real tables + `extra` JSON column per collection** | Typed columns give indexes, constraints and natural SQL; the JSON column absorbs long-tail observations without ceremony. The agent's playbook: new facts start in `extra`, recurring keys get *promoted* to real columns via migration. Structure is earned, not guessed. A pure document store would forfeit SQL and enforce nothing; a pure relational model would demand a migration for every stray observation. |
 | Agent SQL access | **Yes, read-only** | Enforced at the connection level (`PRAGMA query_only` + authorizer), so it physically cannot write. Agents are good at SQL; this replaces an unbounded family of bespoke query tools. |
 | Auth | **Contained OAuth 2.1 provider for now** | A shared signup code gates email/password accounts; Authorization Code + PKCE and DCR match current connector behavior. The provider boundary stays replaceable as clients move from DCR toward Client ID Metadata Documents. |
-| Personal vs intrinsic facts | **Item tables hold intrinsic/shared facts only; all personal facts live on profile links** | `movies.rating` on the record *and* rating on a `self` link would be two homes for the same fact — the agent would have to choose, and choice is where inconsistency breeds. Item tables carry what's true of the thing itself (title, year, ...); every person's relationship to it — including the owner's, via `self` — is a link with rating/dates/note. One representation for everyone. Cost accepted: logging "we watched Dune, loved it" is `add_record` + `add_link`, two calls. |
+| Personal vs intrinsic facts | **Item tables hold intrinsic/shared facts only; all personal facts live on profile links** | `movies.rating` on the record *and* rating on a `self` link would be two homes for the same fact — the agent would have to choose, and choice is where inconsistency breeds. Item tables carry what's true of the thing itself (title, year, ...); every person's relationship to it — including the owner's, via `self` — is a link with rating/dates/note. One representation for everyone. A single entry remains `add_record` + `add_link`; create-only backfills use their atomic `add_multiple_records` composition. |
+| Backfill writes | **One narrow create-only batch tool** | `add_multiple_records` creates records from one collection with optional profile links in one transaction. It is not a generic operation DSL and never updates existing records; enrichment stays explicit through `update_record` and `add_link`. Minimal output is the default so batching reduces context as well as round trips; suffixed ids carry `possible_duplicate_of` rather than treating every slug collision as the same real-world item. |
 | Opinions | **Numeric `rating` on links, not stance words** | Stance vocabularies drift under agent use (`loves`, `loved`, `favorite`, `really_likes`, ...); a number can't. Ratings are `REAL` (decimals like 4.8 welcome); default scale 1–10 with documented meaning (1–2 hate … 9–10 love), per-collection overrides in `_meta` (e.g. 1–5 for books) — the user renegotiates semantics with their agent, not with us. |
 | Dated activity | **`first_at`/`last_at` on links; no events table** | A separate events table forces a classification decision (durable opinion vs dated event) on every write — two plausible homes for the same fact is how agent-written data goes inconsistent. Two typed date columns answer the real queries ("when first/last"). Escalation, if full history ever matters to a user: an activity collection via `create_collection` — no intermediate JSON-list convention (that would be duplicated truth with awkward reads). |
 | Link identity | **`(from, to, kind)` unique; `add_link` upserts** | Makes repeat events idempotent updates (bump `last_at`, keep `first_at`, overwrite `rating`, merge `props`) instead of silently accumulating duplicate edges across sessions. This is what makes the dates design work at all. |
@@ -132,7 +133,7 @@ A single multi-tenant MCP server ("one connector, many collections") where:
 ```
 ┌────────────────────────────────────────────────┐
 │ MCP server (streamable HTTP; stdio for dev)    │
-│  ~13 generic tools                             │
+│  ~14 generic tools                             │
 ├────────────────────────────────────────────────┤
 │ auth: contained OAuth 2.1 provider             │
 │  token → user_id                               │
@@ -268,12 +269,13 @@ rated 8+ that Dad hasn't seen" is a join over `movies`, `links`, and
 `profiles`; "what did we watch last month" is `to_collection = 'movies' AND
 last_at >= ...` — no special-purpose code.
 
-### 3.4 Tools (the whole surface, ~13)
+### 3.4 Tools (the whole surface, ~14)
 
 | Tool | Purpose | Notes |
 |---|---|---|
 | `describe_schema` | No argument: full schema — all collections, fields with descriptions, link kinds, rating scales, row counts, recent migrations. With `collection`: deep detail on one — fields, common `extra` keys seen so far, relevant link kinds, a sample record | One tool, two zoom levels. The no-arg output is the authoritative version of the summary session `instructions` deliver at connect time (see 3.6); the per-collection view is what an agent checks before writing records well. |
 | `add_record` | Insert into a collection | Validates against live schema; `extra` is an explicit dict parameter; unknown top-level keys error with suggestions. Unknown *collection* is an error pointing at `create_collection` (no silent table creation from typos). `collection` is a plain string — tool schemas are static; validation lives server-side. Returns stored record with id. |
+| `add_multiple_records` | Atomically insert multiple records from one collection | Each item contains `values`, optional `extra`, and an optional bare profile link to the new record. Create-only: existing records are enriched through `update_record` / `add_link`. All items commit or all roll back; compact id-and-warning output is the default. |
 | `get_record` | Full record + its links | |
 | `update_record` | Partial update; `extra` merged | |
 | `delete_record` | Remove record (+ its links) | |
@@ -285,11 +287,17 @@ last_at >= ...` — no special-purpose code.
 | `restore_snapshot` | Restore the DB to a named snapshot | Honest name: a point-in-time restore, not a logical rollback. Data written after the snapshot is lost (stated in the description); a safety snapshot is taken first, so restores are themselves restorable. |
 | `list_snapshots` | Available restore targets — scanned from snapshot filenames, each showing timestamp and trigger (migration / restore-safety) | The restore-target picker. Migration *history* isn't a separate tool: recent migrations appear in `describe_schema`, and `_migrations` is queryable via `query`. |
 
-Design rule: tool *descriptions* carry the agent playbook (start observations
-in `extra`; promote recurring keys; check `describe_schema` before migrating;
-prefer links over duplicating data). The server `instructions` summarize the
-same. This is where type-specific tailoring is recovered without
-type-specific servers.
+Design rule: server instructions carry the short global model; individual tool
+descriptions carry only behavior specific to that operation. `describe_schema`
+owns live, user-specific state such as fields, profiles, link kinds, and rating
+scales. One critical sentence about records versus links is intentionally
+repeated on the relevant write tools for clients that surface instructions
+poorly.
+
+Write tools accept `minimal: true` to return identifiers and essential safety
+details instead of full stored objects or schemas. Existing single-write tools
+default to full results; `add_multiple_records` defaults to minimal so a batch
+does not echo its entire input back into agent context.
 
 Second design rule: **schema tools and data tools don't mix.**
 `describe_schema` returns structure, never records (the sample record in its
@@ -303,7 +311,7 @@ the truth is always a `find_records` away.
 `migrate(description, statements[])` executes:
 
 1. **Snapshot** the user's DB file via the SQLite backup API (consistent even
-   mid-activity in WAL mode) into `data/{user_id}/backups/`.
+   during concurrent activity) into `data/{user_id}/backups/`.
 2. **Apply** all statements in a single transaction, on a **contained
    connection**: an SQLite authorizer rejects anything that escapes the user
    DB or defeats the snapshot/transaction guarantees — `ATTACH`/`DETACH`,
@@ -441,7 +449,7 @@ actual deployment needs rather than expanding the account system in advance.
    with their seed schemas; `create_collection` for new types; normalized
    generic YAML fixtures for integration tests, loaded through the same
    record/link operations used by MCP tools.
-4. MCP layer over stdio with a single local user; all ~13 tools (static
+4. MCP layer over stdio with a single local user; all ~14 tools (static
    schemas); generic instructions plus authoritative `describe_schema` output.
 5. Test pyramid: unit tests on engine and migrator (including failure paths:
    bad DDL, integrity failures, orphaned links, restore-of-restore);
@@ -511,5 +519,6 @@ separate databases.
 - **Migration safety vs. freedom.** The agent can author destructive DML.
   Snapshots make this recoverable, not impossible. Acceptable for personal
   data; revisit if databases become precious.
-- **SQLite concurrency.** One process, WAL mode, per-user write serialization
-  is plenty here; revisit only if this outgrows "friends and family".
+- **SQLite concurrency.** One process, per-user write serialization, and a
+  30-second SQLite busy timeout are plenty here; revisit only if this outgrows
+  "friends and family".
