@@ -341,6 +341,77 @@ class OAuthFlowTest(unittest.TestCase):
             )
             self.assertEqual(accepted.status_code, 303)
 
+    def test_scope_less_basic_registration_completes_token_exchange(self) -> None:
+        callback_url = "http://127.0.0.1:65094/callback"
+        with TestClient(self.app, base_url=BASE_URL, follow_redirects=False) as client:
+            registration = client.post(
+                "/register",
+                json={
+                    "client_name": "fx",
+                    "redirect_uris": [callback_url],
+                    "grant_types": ["authorization_code", "refresh_token"],
+                    "response_types": ["code"],
+                    "application_type": "web",
+                    "token_endpoint_auth_method": "client_secret_basic",
+                },
+            )
+            self.assertEqual(registration.status_code, 201)
+            oauth_client = registration.json()
+            self.assertEqual(oauth_client["scope"], "fkey offline_access")
+            self.assertEqual(
+                oauth_client["token_endpoint_auth_method"], "client_secret_post"
+            )
+
+            verifier = "test-verifier-" * 5
+            challenge = (
+                base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+                .decode()
+                .rstrip("=")
+            )
+            authorization = client.get(
+                "/authorize",
+                params={
+                    "response_type": "code",
+                    "client_id": oauth_client["client_id"],
+                    "redirect_uri": callback_url,
+                    "scope": "fkey offline_access",
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                    "resource": f"{BASE_URL}/mcp",
+                },
+            )
+            self.assertEqual(authorization.status_code, 302)
+            self.assertTrue(
+                authorization.headers["location"].startswith(f"{BASE_URL}/oauth/login")
+            )
+            request_id = parse_qs(urlparse(authorization.headers["location"]).query)[
+                "request"
+            ][0]
+            login = client.post(
+                "/oauth/login",
+                data={
+                    "request": request_id,
+                    "email": "alice@example.com",
+                    "password": "correct horse battery staple",
+                },
+            )
+            self.assertEqual(login.status_code, 303)
+            code = parse_qs(urlparse(login.headers["location"]).query)["code"][0]
+
+            token = client.post(
+                "/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "client_id": oauth_client["client_id"],
+                    "client_secret": oauth_client["client_secret"],
+                    "code": code,
+                    "redirect_uri": callback_url,
+                    "code_verifier": verifier,
+                    "resource": f"{BASE_URL}/mcp",
+                },
+            )
+            self.assertEqual(token.status_code, 200)
+
 
 if __name__ == "__main__":
     unittest.main()

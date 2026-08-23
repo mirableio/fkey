@@ -63,7 +63,7 @@ def _auth_settings(issuer_url: str, resource_url: str) -> AuthSettings:
         client_registration_options=ClientRegistrationOptions(
             enabled=True,
             valid_scopes=[MCP_SCOPE, OFFLINE_SCOPE],
-            default_scopes=[MCP_SCOPE],
+            default_scopes=[MCP_SCOPE, OFFLINE_SCOPE],
         ),
         revocation_options=RevocationOptions(enabled=True),
     )

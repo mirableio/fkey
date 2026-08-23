@@ -190,6 +190,10 @@ class OAuthProvider:
         return OAuthClientInformationFull.model_validate_json(row["client_json"])
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
+        # MCP SDK 2.0 requires a duplicate form-body client_id for Basic auth.
+        # Echo the interoperable form-based method until its token handler is fixed.
+        if client_info.token_endpoint_auth_method == "client_secret_basic":
+            client_info.token_endpoint_auth_method = "client_secret_post"
         self._validate_client(client_info)
         store = self._store()
         try:
