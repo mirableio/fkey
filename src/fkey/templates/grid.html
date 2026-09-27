@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% from "macros.html" import icon %}
+{% block head %}
+  <link rel="stylesheet" href="/app/static/{{ ag_grid }}/ag-grid.min.css">
+  <link rel="stylesheet" href="/app/static/{{ ag_grid }}/ag-theme-quartz.min.css">
+  <script src="/app/static/{{ ag_grid }}/ag-grid-community.min.noStyle.js" defer></script>
+{% endblock %}
+{% block main %}
+<header class="toolbar">
+  <div class="toolbar-title">
+    <h1>{{ icon(collection_icon) }}<span>{{ label }}</span><span class="count">{{ total }}</span></h1>
+    {% if description %}<p class="description" title="{{ description }}">{{ description }}</p>{% endif %}
+  </div>
+  {% if total %}
+  <form class="search" role="search">
+    {{ icon("search") }}
+    <input id="search" name="q" type="search" value="{{ q }}" placeholder="Search {{ noun }}"
+           aria-label="Search {{ noun }}" autocomplete="off" spellcheck="false">
+  </form>
+  {% endif %}
+</header>
+{% if total %}
+<section class="grid-region">
+  <div id="grid" class="grid-host ag-theme-quartz" aria-label="{{ label }}"></div>
+  <footer class="grid-footer">
+    <span id="grid-status">{{ total }} {{ noun }}</span>
+    {% if truncated %}<span>Showing the {{ shown }} most recently updated</span>{% endif %}
+  </footer>
+  <noscript><p class="empty">Turn on JavaScript to browse {{ noun }}.</p></noscript>
+  <script type="application/json" id="grid-data">{{ grid_data|tojson }}</script>
+</section>
+{% else %}
+<div class="empty">
+  {{ icon(collection_icon) }}
+  <h2>No {{ noun }} yet</h2>
+  <p>Ask your assistant to add some.</p>
+</div>
+{% endif %}
+{% endblock %}

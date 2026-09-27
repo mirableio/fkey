@@ -54,7 +54,7 @@ FKEY_DB=/path/to/db.sqlite uv run fkey
 | `add_multiple_records` | Atomically create a same-collection batch, with optional profile links |
 | `find_records` | Exact field filters and text search |
 | `add_link` / `remove_link` | Profile history and named relationships |
-| `query` | Read-only SQLite SELECT for arbitrary questions |
+| `query` | Read-only SQLite SELECT for arbitrary questions, stopped after 30 seconds |
 | `create_collection` | Add a new item type with a minimal typed schema |
 | `migrate` | Apply transactional DDL/DML after taking a snapshot |
 | `list_snapshots` / `restore_snapshot` | Inspect and restore point-in-time snapshots |
@@ -135,6 +135,13 @@ Each authenticated `/mcp` request is routed from the access token's user
 identity to that account's database. User IDs are never MCP tool arguments and
 accounts are not exposed through MCP.
 
+### Browse UI
+
+Signed-in users can browse their database read-only at `<public-origin>/app`:
+an Airtable-style grid per collection with search and sorting, and record
+pages whose links lead to the related records. It uses the same account as the
+connector. See [`docs/UI.md`](docs/UI.md).
+
 ### Local Docker Compose
 
 The local Compose stack runs fkey with Redis-backed limits on signup, login,
@@ -162,7 +169,9 @@ stack, then continue pointing the tunnel at `http://localhost:8000`.
 Production runs on `beta.fkey.app` behind the host's Caddy service. The app is
 bound to host loopback on port 9040; only Caddy exposes it publicly. SQLite
 account and user databases persist in `/opt/apps/fkey/data`, while Redis holds
-only disposable rate-limit counters.
+only disposable rate-limit counters. The containers run as UID 10001;
+`make deploy` gives that user ownership of `data/` and `backups/` before
+starting them.
 
 Create the production environment and set a real `FKEY_SIGNUP_CODE`, then
 deploy the current working tree:

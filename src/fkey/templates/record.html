@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% from "macros.html" import icon, pills, value, link_pill %}
+{% block main %}
+<article class="record">
+  <nav class="breadcrumb" aria-label="Breadcrumb">
+    <a href="{{ collection_href }}">{{ icon(collection_icon) }}{{ collection_label }}</a>
+    {{ icon("chevron-right") }}
+    <span>{{ record_title }}</span>
+  </nav>
+  <header class="record-header">
+    <h1>{{ record_title }}</h1>
+    <p class="meta"><code>{{ record_id }}</code> · Updated {{ updated_at[:10] }} · Created {{ created_at[:10] }}</p>
+  </header>
+
+  <section class="card" aria-label="Fields">
+    {% for field in fields %}
+    <div class="field">
+      <div class="field-label"{% if field.description %} title="{{ field.description }}"{% endif %}>{{ icon(field.icon) }}<span>{{ field.label }}</span></div>
+      <div class="field-value">{% if field.cell.kind == "empty" %}<span class="dash">—</span>{% else %}{{ value(field.cell) }}{% endif %}</div>
+    </div>
+    {% endfor %}
+    {% for field in more %}
+    <div class="field">
+      <div class="field-label" title="Kept in extra, outside the typed fields.">{{ icon("braces") }}<span>{{ field.label }}</span></div>
+      <div class="field-value">{{ value(field.cell) }}</div>
+    </div>
+    {% endfor %}
+  </section>
+
+  <section class="section" aria-labelledby="history">
+    <h2 id="history">History <span class="count">{{ history_total }}</span></h2>
+    {% for group in history_groups %}
+    {% if group.label %}<h3>{{ icon(group.icon) }}{{ group.label }} <span class="count">{{ group.count }}</span></h3>{% endif %}
+    <table class="list">
+      <thead>
+        <tr>
+          <th class="who">{{ "Record" if is_profile else "Person" }}</th>
+          <th class="number">Rating</th>
+          <th class="date">First</th>
+          <th class="date">Last</th>
+          <th>Note</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in group.rows %}
+        <tr>
+          <td class="who">{{ link_pill(row.pill) }}</td>
+          <td class="number">{{ row.rating }}</td>
+          <td class="date">{{ row.first_at }}</td>
+          <td class="date">{{ row.last_at }}</td>
+          <td class="note">{{ row.note }}{% if row.props %}{% if row.note %} {% endif %}{{ pills(row.props) }}{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="muted">{{ "Nothing logged yet." if is_profile else "No one has logged this yet." }}</p>
+    {% endfor %}
+    {% if previous_href or next_href %}
+    <nav class="pager record-pager" aria-label="History pages">
+      {% if previous_href %}<a href="{{ previous_href }}">{{ icon("chevron-left") }}Newer</a>{% endif %}
+      {% if next_href %}<a href="{{ next_href }}">Older{{ icon("chevron-right") }}</a>{% endif %}
+    </nav>
+    {% endif %}
+  </section>
+
+  <section class="section" aria-labelledby="relationships">
+    <h2 id="relationships">Relationships</h2>
+    {% if relationship_groups %}
+    <dl class="relationships">
+      {% for group in relationship_groups %}
+      <div class="relationship">
+        <dt>{{ group.heading }}</dt>
+        <dd>{% for pill in group.pills %}{{ link_pill(pill) }}{% endfor %}</dd>
+      </div>
+      {% endfor %}
+    </dl>
+    {% else %}
+    <p class="muted">None yet.</p>
+    {% endif %}
+  </section>
+</article>
+{% endblock %}

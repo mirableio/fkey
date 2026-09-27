@@ -1,0 +1,25 @@
+{% macro icon(name) -%}
+<svg class="icon" aria-hidden="true"><use href="#i-{{ name }}"></use></svg>
+{%- endmacro %}
+
+{% macro pills(items) -%}
+{% for pill in items -%}
+{% if pill.url -%}
+<a class="pill" href="{{ pill.url }}" target="_blank" rel="noopener noreferrer" title="{{ pill.key }}: {{ pill.value }}"><span class="pill-key">{{ pill.key }}</span> {{ pill.value }}</a>
+{%- else -%}
+<span class="pill" title="{{ pill.key }}: {{ pill.value }}"><span class="pill-key">{{ pill.key }}</span> {{ pill.value }}</span>
+{%- endif %}
+{%- endfor %}
+{%- endmacro %}
+
+{% macro value(cell) -%}
+{% if cell.kind == "url" -%}
+<a class="url" href="{{ cell.value }}" target="_blank" rel="noopener noreferrer">{{ cell.value }}</a>
+{%- elif cell.kind != "empty" -%}
+<span title="{{ cell.title or cell.value }}">{{ cell.value }}</span>
+{%- endif %}
+{%- endmacro %}
+
+{% macro link_pill(pill) -%}
+<a class="link-pill" href="{{ pill.href }}" title="{{ pill.label }}">{{ icon(pill.icon) }}<span>{{ pill.label }}</span></a>
+{%- endmacro %}

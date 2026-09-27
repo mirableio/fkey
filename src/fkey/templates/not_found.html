@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% from "macros.html" import icon %}
+{% block main %}
+<div class="empty">
+  {{ icon("table") }}
+  <h2>Not found</h2>
+  <p>{{ message }}</p>
+  <p><a href="/app">Back to your collections</a></p>
+</div>
+{% endblock %}

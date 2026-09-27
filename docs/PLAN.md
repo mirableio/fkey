@@ -112,7 +112,7 @@ A single multi-tenant MCP server ("one connector, many collections") where:
 |---|---|---|
 | One MCP server vs one per collection type | **One server** | Profiles/links must span collections (separate servers can't join); ~14 generic tools beat 30+ near-duplicates in the agent's context; one connector per user per platform. Type-specific tailored tools would go stale anyway once schemas evolve at runtime. |
 | Storage model | **Real tables + `extra` JSON column per collection** | Typed columns give indexes, constraints and natural SQL; the JSON column absorbs long-tail observations without ceremony. The agent's playbook: new facts start in `extra`, recurring keys get *promoted* to real columns via migration. Structure is earned, not guessed. A pure document store would forfeit SQL and enforce nothing; a pure relational model would demand a migration for every stray observation. |
-| Agent SQL access | **Yes, read-only** | Enforced at the connection level (`PRAGMA query_only` + authorizer), so it physically cannot write. Agents are good at SQL; this replaces an unbounded family of bespoke query tools. |
+| Agent SQL access | **Yes, read-only** | Enforced at the connection level (`PRAGMA query_only`, one statement per call), so it physically cannot write; a 30-second limit stops runaway queries from holding the database. Agents are good at SQL; this replaces an unbounded family of bespoke query tools. |
 | Auth | **Contained OAuth 2.1 provider for now** | A shared signup code gates email/password accounts; Authorization Code + PKCE and DCR match current connector behavior. The provider boundary stays replaceable as clients move from DCR toward Client ID Metadata Documents. |
 | Personal vs intrinsic facts | **Item tables hold intrinsic/shared facts only; all personal facts live on profile links** | `movies.rating` on the record *and* rating on a `self` link would be two homes for the same fact — the agent would have to choose, and choice is where inconsistency breeds. Item tables carry what's true of the thing itself (title, year, ...); every person's relationship to it — including the owner's, via `self` — is a link with rating/dates/note. One representation for everyone. A single entry remains `add_record` + `add_link`; create-only backfills use their atomic `add_multiple_records` composition. |
 | Backfill writes | **One narrow create-only batch tool** | `add_multiple_records` creates records from one collection with optional profile links in one transaction. It is not a generic operation DSL and never updates existing records; enrichment stays explicit through `update_record` and `add_link`. Minimal output is the default so batching reduces context as well as round trips; suffixed ids carry `possible_duplicate_of` rather than treating every slug collision as the same real-world item. |
@@ -145,7 +145,7 @@ A single multi-tenant MCP server ("one connector, many collections") where:
 │  snapshots: external catalog + restore         │
 │  bootstrap: new-DB seeding (profiles, links,   │
 │    standard collections, _meta, conventions)   │
-│  store: user_id → data/{user_id}/db.sqlite     │
+│  store: user_id → data/users/{id}/db.sqlite    │
 │         read-only connection for query tool    │
 └────────────────────────────────────────────────┘
 ```
@@ -198,7 +198,7 @@ never contacted.
 
 `people` — public figures, in the sense IMDb/TMDB use "People": actors,
 directors, authors, musicians, bands (`kind: band`), winemakers. `name`,
-`kind`, `notes`, `extra`. Deliberately separate from `profiles`: profile
+`kind`, `extra`. Deliberately separate from `profiles`: profile
 entries are private observations (relations, tastes, notes about your kids),
 people are shared public facts (filmographies, discographies) — different
 privacy weight, different agent etiquette (ask before adding someone's
@@ -273,15 +273,15 @@ last_at >= ...` — no special-purpose code.
 
 | Tool | Purpose | Notes |
 |---|---|---|
-| `describe_schema` | No argument: full schema — all collections, fields with descriptions, link kinds, rating scales, row counts, recent migrations. With `collection`: deep detail on one — fields, common `extra` keys seen so far, relevant link kinds, a sample record | One tool, two zoom levels. The no-arg output is the authoritative version of the summary session `instructions` deliver at connect time (see 3.6); the per-collection view is what an agent checks before writing records well. |
+| `describe_schema` | No argument: full schema — all collections, fields with descriptions, link kinds, rating scales, row counts, recent migrations. With `collection`: deep detail on one — fields, common `extra` keys seen so far, relevant link kinds, a sample record | One tool, two zoom levels. The no-arg output is the authoritative live view — instructions stay static (see 3.6); the per-collection view is what an agent checks before writing records well. |
 | `add_record` | Insert into a collection | Validates against live schema; `extra` is an explicit dict parameter; unknown top-level keys error with suggestions. Unknown *collection* is an error pointing at `create_collection` (no silent table creation from typos). `collection` is a plain string — tool schemas are static; validation lives server-side. Returns stored record with id. |
 | `add_multiple_records` | Atomically insert multiple records from one collection | Each item contains `values`, optional `extra`, and an optional bare profile link to the new record. Create-only: existing records are enriched through `update_record` / `add_link`. All items commit or all roll back; compact id-and-warning output is the default. |
-| `get_record` | Full record + its links | |
+| `get_record` | Full record + its links | Links most recently updated first, capped at 100 (`links_truncated` marks more) so a busy profile can't flood context; `query` reaches the rest. |
 | `update_record` | Partial update; `extra` merged | |
 | `delete_record` | Remove record (+ its links) | |
-| `find_records` | Structured filter (collection, field=value, text contains, limit) | The 80% case without SQL. |
+| `find_records` | Structured filter (collection, field=value, text contains, limit) | The 80% case without SQL. Text search casefolds in Python because SQLite's `LOWER`/`LIKE` fold ASCII only. |
 | `add_link` / `remove_link` | Manage edges | `kind` optional only for profile→non-profile (the common case; rating/dates/note carry the meaning), required otherwise. Upserts on `(from, to, kind)`; single optional `at` maintains `first_at`/`last_at` as min/max server-side; omitted fields preserved, explicit `null` clears, `props` merges. Named kinds validated against the registry. Link listing is folded into `get_record` / `query`. |
-| `query` | **Read-only** SQL SELECT | Separate connection with `PRAGMA query_only` + authorizer rejecting non-SELECT; row/size limits. |
+| `query` | **Read-only** SQL SELECT | Separate connection with `PRAGMA query_only`; one SELECT/WITH statement; row limit and a 30-second time limit. |
 | `create_collection` | Create a new collection: name, fields with types + descriptions | For genuinely new types only (standard ones are pre-seeded): backbone columns (`id`, timestamps, `extra`) added automatically, `_meta` populated. Description teaches "start minimal — a few fields plus `extra`". |
 | `migrate` | Apply agent-authored DDL/DML with automatic snapshot | The single door for all schema evolution: promoting `extra` keys or `props` data to columns, reshaping, backfills, updating `_meta` descriptions and the kind registry. Deliberately one powerful tool rather than a suite of constrained schema operations — snapshots plus readable errors make mistakes recoverable, and helpers can be added later if dogfooding proves agents fumble. Contained to the user's own DB (see 3.5). |
 | `restore_snapshot` | Restore the DB to a named snapshot | Honest name: a point-in-time restore, not a logical rollback. Data written after the snapshot is lost (stated in the description); a safety snapshot is taken first, so restores are themselves restorable. |
@@ -303,20 +303,22 @@ Second design rule: **schema tools and data tools don't mix.**
 `describe_schema` returns structure, never records (the sample record in its
 per-collection view is the one deliberate exception — it exists to teach
 conventions); records flow only through `get_record` / `find_records` /
-`query`. The profiles roster in session instructions is a convenience copy —
-the truth is always a `find_records` away.
+`query`.
 
 ### 3.5 Migrations, snapshots, restore
 
 `migrate(description, statements[])` executes:
 
-1. **Snapshot** the user's DB file via the SQLite backup API (consistent even
-   during concurrent activity) into `data/{user_id}/backups/`.
+1. **Snapshot** the user's DB file via the SQLite backup API into
+   `data/users/{user_id}/backups/`. The per-user write lock is held from here
+   until the migration commits, so no other write lands between snapshot and
+   migration.
 2. **Apply** all statements in a single transaction, on a **contained
    connection**: an SQLite authorizer rejects anything that escapes the user
    DB or defeats the snapshot/transaction guarantees — `ATTACH`/`DETACH`,
-   `VACUUM`, explicit `BEGIN`/`COMMIT`/`ROLLBACK`, `load_extension`,
-   dangerous PRAGMAs (`writable_schema`, ...), and writes to `_migrations`.
+   explicit `BEGIN`/`COMMIT`/`ROLLBACK`, `load_extension`, dangerous PRAGMAs
+   (`writable_schema`, ...), and writes to `_migrations` (`VACUUM` cannot run
+   inside the transaction anyway).
    Raw DDL/DML freedom stays intact *inside* the database (`_meta` is
    writable — that's how descriptions, rating scales, and the kind registry
    evolve with the schema).
@@ -324,8 +326,10 @@ the truth is always a `find_records` away.
    **link-integrity scan** (polymorphic links aren't covered by SQLite FKs —
    an orphan check over `links` against the live collections is app-level);
    required structures still exist (`profiles`, `links`, `_meta`,
-   `_migrations`, backbone columns). Any of these failing rolls the
-   transaction back with a readable error (snapshot kept regardless).
+   `_migrations`, backbone columns) and collection field names remain valid
+   lowercase identifiers the record tools can use. Any failure — here or in
+   step 2 — rolls the transaction back with a readable error and deletes the
+   now-redundant snapshot, so retries never crowd out real restore points.
    **`_meta` reconciliation** runs last: descriptions for dropped
    columns/tables are pruned, new columns missing descriptions come back as
    *warnings* — they never fail an otherwise valid migration.
@@ -338,18 +342,21 @@ the truth is always a `find_records` away.
 self-describing —
 
 ```
-2026-08-19T143200--migration--42--add-vintage.sqlite
-2026-08-19T151000--restore-safety.sqlite
+2026-08-19T143200123456--migration--42-add-vintage.sqlite
+2026-08-19T151000654321--restore-safety.sqlite
 ```
 
-— and `list_snapshots` scans them. No sidecar index to maintain or recover,
+— and `list_snapshots` scans them. The label is the slugified migration id
+and description, capped at 48 bytes: Linux limits a filename to 255 bytes, and
+a long Cyrillic description once exceeded it. The full description stays in
+`_migrations`. No sidecar index to maintain or recover,
 nothing to drift when snapshots are pruned. The catalog lives outside the
 database on purpose: `_migrations` is *inside* the file being restored, so it
 alone could never safely describe the restore's own undo path.
 
 **Restore procedure** (`restore_snapshot`): acquire the per-user write lock →
 copy and validate the candidate snapshot without touching the live database →
-close cached connections → take a safety snapshot of the current state
+take a safety snapshot of the current state
 (cataloged) → replace the DB file atomically → reopen → run the same
 integrity, structure, and link checks as step 3. Point-in-time, honestly
 documented: data written after the snapshot is lost, but the safety snapshot
@@ -358,8 +365,7 @@ makes the restore itself reversible.
 Notes:
 
 - SQLite `ALTER TABLE` is limited (no type changes, constrained drops); the
-  standard workaround (create new table → copy → rename) is just statements,
-  and the `migrate` tool description teaches the pattern.
+  standard workaround (create new table → copy → rename) is just statements.
 - The engine keeps the newest 15 migration/restore snapshots per user. The
   filename directory remains the restore catalog; older `_migrations`
   references are historical and may outlive their restore files.
@@ -374,11 +380,10 @@ Notes:
 **Session-start orientation.** The MCP `instructions` field contains generic
 conventions. Multi-user HTTP initialization occurs before an authenticated
 request identifies a user, so instructions must not contain any account's
-schema:
-
-> Manage the user's personal taste database. Use `describe_schema` to inspect
-> the live collections before unfamiliar writes. Personal opinions and dates
-> belong on profile-to-item links; intrinsic facts belong on item records.
+schema. They carry only the global model: records hold intrinsic facts and
+profile links hold personal ratings and dates, the user's profile is `self`,
+`describe_schema` is the live view, ratings are never invented, and when to
+use `add_multiple_records`, `minimal`, and `migrate`.
 
 Instructions are only a hint: clients cache initialize results and surface them
 unevenly. `describe_schema` is the authoritative source on demand, after schema
@@ -427,7 +432,9 @@ actual deployment needs rather than expanding the account system in advance.
 ### 3.8 Deployment
 
 - Docker image; single small VPS.
-- TLS via platform or Caddy; both connector platforms require HTTPS.
+- TLS via platform or Caddy; both connector platforms require HTTPS. Caddy
+  strips client-supplied `CF-Connecting-IP` so per-IP auth limits can't be
+  spoofed; the app container runs as an unprivileged user.
 - Persistent bind mounts for `data/` and completed daily `backups/`; the
   backup sidecar mounts primary data read-only and uses the SQLite backup API.
   Off-site backup will use encrypted restic over completed sets only.
@@ -510,7 +517,7 @@ separate databases.
   preferred AS/RS split are both in motion; that's exactly why the AS shape
   is a phase-2 spike, not a decision made in this document. Budget real
   tunnel-and-retry days against both clients' current behavior.
-- **Agent discipline.** The design leans on generated instructions and tool
+- **Agent discipline.** The design leans on static instructions and tool
   descriptions to steer agent behavior (promote-don't-hoard,
   link-don't-duplicate, sane schemas for new types). Expect iteration on
   wording after dogfooding; treat instruction text as a first-class artifact.

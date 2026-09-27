@@ -1,6 +1,8 @@
 DEPLOY_HOST ?= appuser@beta.fkey.app
 DEPLOY_PATH ?= /opt/apps/fkey
 PROD_ENV ?= $(if $(wildcard .env.prod),.env.prod,.env)
+# Container user from the Dockerfile; it must own the bind-mounted data.
+APP_UID = 10001
 
 COMPOSE_LOCAL = docker compose -p fkey --project-directory . --env-file .env -f infra/docker-compose.local.yaml
 COMPOSE_PROD = docker compose -p fkey --project-directory . --env-file .env.prod -f infra/docker-compose.prod.yaml
@@ -21,7 +23,7 @@ deploy:
 	git ls-files -c -m -o --exclude-standard -z | rsync -avz --files-from=- --from0 ./ $(DEPLOY_HOST):$(DEPLOY_PATH)
 	scp $(PROD_ENV) $(DEPLOY_HOST):$(DEPLOY_PATH)/.env.prod
 	ssh $(DEPLOY_HOST) 'chmod 600 $(DEPLOY_PATH)/.env.prod'
-	ssh -t $(DEPLOY_HOST) 'bash -l -c "cd $(DEPLOY_PATH) && sudo DOCKER_BUILDKIT=1 BUILDX_NO_DEFAULT_ATTESTATIONS=1 $(COMPOSE_PROD) up -d --build"'
+	ssh -t $(DEPLOY_HOST) 'bash -l -c "cd $(DEPLOY_PATH) && sudo DOCKER_BUILDKIT=1 BUILDX_NO_DEFAULT_ATTESTATIONS=1 $(COMPOSE_PROD) build && sudo mkdir -p data backups && sudo chown -R $(APP_UID):$(APP_UID) data backups && sudo $(COMPOSE_PROD) up -d"'
 	ssh $(DEPLOY_HOST) 'for i in $$(seq 1 30); do curl -fsS http://127.0.0.1:9040/signup >/dev/null && exit 0; sleep 1; done; echo "fkey did not become ready" >&2; exit 1'
 	ssh -t $(DEPLOY_HOST) 'sudo ln -sfn $(DEPLOY_PATH)/infra/Caddyfile /etc/caddy/sites-enabled/fkey.caddy && sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy'
 

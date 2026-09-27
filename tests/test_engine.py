@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fkey.engine import BUSY_TIMEOUT_MS, TasteDB, slugify
 from fkey.migrations import SNAPSHOT_LABEL_MAX_BYTES, SNAPSHOT_RETENTION
@@ -283,6 +284,27 @@ class TasteDBTest(unittest.TestCase):
         )
         self.assertEqual(result["rows"], [{"title": "Dune"}])
 
+    def test_get_record_returns_latest_links_up_to_limit(self) -> None:
+        wines = self.db.add_multiple_records(
+            "wines",
+            [{"values": {"name": name}, "profile_link": {}} for name in "ABC"],
+        )
+        with patch("fkey.records.utc_now", return_value="2099-01-01T00:00:00+00:00"):
+            self.db.add_link(
+                "profiles", "self", "wines", wines[0]["record"]["id"],
+                values={"note": "touched last"},
+            )
+
+        with patch("fkey.records.RECORD_LINK_LIMIT", 2):
+            result = self.db.get_record("profiles", "self")
+
+        self.assertEqual(len(result["links"]), 2)
+        self.assertEqual(result["links"][0]["note"], "touched last")
+        self.assertTrue(result["links_truncated"])
+        self.assertNotIn(
+            "links_truncated", self.db.get_record("wines", wines[1]["record"]["id"])
+        )
+
     def test_create_collection(self) -> None:
         schema = self.db.create_collection(
             "restaurants",
@@ -342,6 +364,17 @@ class TasteDBTest(unittest.TestCase):
                 "movies", {"title": "Other"}, record_id="not_canonical"
             )
 
+    def test_text_search_folds_case_in_every_script(self) -> None:
+        self.db.add_record(
+            "wines", {"name": "Шардоне Резерв", "vintage": 2020, "country": "Франция"}
+        )
+        self.db.add_record("wines", {"name": "Discount 50% Blend"})
+
+        for text in ("франция", "шардоне резерв", "РЕЗЕРВ"):
+            found = self.db.find_records("wines", text=text)
+            self.assertEqual([row["name"] for row in found], ["Шардоне Резерв"], text)
+        self.assertEqual(self.db.find_records("wines", text="50_"), [])
+
     def test_query_disambiguates_duplicate_column_names(self) -> None:
         result = self.db.query("SELECT 1 AS value, 2 AS value")
 
@@ -349,6 +382,21 @@ class TasteDBTest(unittest.TestCase):
         self.assertEqual(result["rows"], [{"value": 1, "value_2": 2}])
         with self.assertRaisesRegex(ValueError, "SELECT or WITH"):
             self.db.query("DELETE FROM movies")
+
+    def test_query_stops_at_time_limit(self) -> None:
+        runaway = (
+            "WITH RECURSIVE c(x) AS "
+            "(SELECT 1 UNION ALL SELECT x + 1 FROM c, profiles) "
+            "SELECT COUNT(*) FROM c"
+        )
+
+        with (
+            patch("fkey.migrations.QUERY_TIMEOUT_SECONDS", 0.2),
+            self.assertRaisesRegex(ValueError, "stopped after 0.2 seconds"),
+        ):
+            self.db.query(runaway)
+
+        self.db.update_record("profiles", "self", {"notes": "writes still work"})
 
     def test_failed_migration_cannot_commit_early(self) -> None:
         movie = self.db.add_record("movies", {"title": "Arrival", "year": 2016})
@@ -372,6 +420,14 @@ class TasteDBTest(unittest.TestCase):
 
         self.assertEqual(self.db.get_record("profiles", "self")["record"]["id"], "self")
         self.assertEqual(self.db.describe_schema()["recent_migrations"], [])
+        self.assertEqual(self.db.list_snapshots(), [])
+
+    def test_migration_rejects_field_names_tools_cannot_use(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid field names: Grape"):
+            self.db.migrate("add grape", ["ALTER TABLE wines ADD COLUMN Grape TEXT"])
+
+        fields = {field["name"] for field in self.db.describe_schema("wines")["fields"]}
+        self.assertNotIn("Grape", fields)
 
     def test_migration_is_confined_and_preserves_history(self) -> None:
         side_database = Path(self.temporary.name) / "side.sqlite"

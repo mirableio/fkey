@@ -21,13 +21,14 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import RedirectResponse, Response
 
+from fkey import ui
 from fkey.accounts import AccountStore
 from fkey.engine import TasteDB
 from fkey.oauth import MCP_SCOPE, OFFLINE_SCOPE, OAuthProvider
 from fkey.rate_limit import RateLimitMiddleware, RedisRateLimiter
-from fkey.web import oauth_login_page, signup_page
+from fkey.web import app_login_page, app_logout, oauth_login_page, signup_page
 
 DEFAULT_DB = Path("data/local/db.sqlite")
 DEFAULT_PUBLIC_URL = "http://127.0.0.1:8000"
@@ -214,6 +215,44 @@ async def oauth_login(request: Request) -> Response:
     return await oauth_login_page(request, oauth_provider)
 
 
+@mcp.custom_route("/", methods=["GET"], include_in_schema=False)
+async def root(_request: Request) -> Response:
+    return RedirectResponse("/app", status_code=302)
+
+
+@mcp.custom_route("/app/login", methods=["GET", "POST"], include_in_schema=False)
+async def browse_login(request: Request) -> Response:
+    """Sign in to the read-only browse UI."""
+    return await app_login_page(request, oauth_provider)
+
+
+@mcp.custom_route("/app/logout", methods=["POST"], include_in_schema=False)
+async def browse_logout(request: Request) -> Response:
+    return await app_logout(request, oauth_provider)
+
+
+@mcp.custom_route("/app", methods=["GET"], include_in_schema=False)
+async def browse_home(request: Request) -> Response:
+    return await ui.render(request, oauth_provider, user_engine, ui.home_page)
+
+
+@mcp.custom_route("/app/c/{collection}", methods=["GET"], include_in_schema=False)
+async def browse_collection(request: Request) -> Response:
+    return await ui.render(request, oauth_provider, user_engine, ui.grid_page)
+
+
+@mcp.custom_route(
+    "/app/c/{collection}/{record_id:path}", methods=["GET"], include_in_schema=False
+)
+async def browse_record(request: Request) -> Response:
+    return await ui.render(request, oauth_provider, user_engine, ui.record_page)
+
+
+@mcp.custom_route("/app/static/{name:path}", methods=["GET"], include_in_schema=False)
+async def browse_static(request: Request) -> Response:
+    return await ui.static_file(request)
+
+
 @mcp.tool(annotations=_READ_ONLY)
 def describe_schema(collection: str | None = None) -> dict[str, Any]:
     """Describe the live schema and conventions.
@@ -265,7 +304,11 @@ def add_multiple_records(
 
 @mcp.tool(annotations=_READ_ONLY)
 def get_record(collection: str, record_id: str) -> dict[str, Any]:
-    """Get one complete record and all its incoming and outgoing links."""
+    """Get one complete record and its incoming and outgoing links.
+
+    Links are most recently updated first, up to 100; links_truncated marks
+    more. Use query for the rest.
+    """
     return engine().get_record(collection, record_id)
 
 
@@ -364,7 +407,8 @@ def query_database(
     """Run a read-only parameterized SQLite SELECT or WITH query.
 
     Bare profile-history links store kind = ''. Parameters use ? placeholders;
-    results are capped by limit. Use describe_schema when names are uncertain.
+    results are capped by limit, and queries stop after 30 seconds. Use
+    describe_schema when names are uncertain.
     """
     return engine().query(sql, parameters, limit)
 
@@ -394,8 +438,8 @@ def migrate(
     Never use this for ordinary record creation or updates: use add_record or
     create-only add_multiple_records, then update_record and add_link to enrich
     existing records. Reserve migrate for schema changes, related backfills,
-    and _meta updates. Statements run in one transaction; failures roll back
-    and keep the snapshot. minimal omits the resulting full schema.
+    and _meta updates. Statements run in one transaction; a failure rolls
+    everything back. minimal omits the resulting full schema.
     """
     result = engine().migrate(description, statements)
     if not minimal:

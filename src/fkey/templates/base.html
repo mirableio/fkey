@@ -1,0 +1,38 @@
+{% from "macros.html" import icon %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} · fkey</title>
+{% block head %}{% endblock %}
+  <link rel="stylesheet" href="/app/static/ui.css">
+  <script src="/app/static/ui.js" defer></script>
+</head>
+<body>
+{% include "icons.html" %}
+<header class="mobile-bar">
+  <button class="icon-button nav-toggle" type="button" aria-controls="sidebar" aria-expanded="false" aria-label="Show collections">{{ icon("menu") }}</button>
+  <a class="brand" href="/app">fkey</a>
+</header>
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <a class="brand" href="/app">fkey</a>
+    <nav class="collections" aria-label="Collections">
+      {% for item in nav %}
+      <a class="nav-item{{ ' current' if item.current }}" href="{{ item.href }}"{% if item.current %} aria-current="page"{% endif %}>
+        {{ icon(item.icon) }}<span class="nav-label">{{ item.label }}</span><span class="nav-count">{{ item.count }}</span>
+      </a>
+      {% endfor %}
+    </nav>
+    <form class="account" method="post" action="/app/logout">
+      <span class="account-name">{{ user_name }}</span>
+      <button class="icon-button" type="submit" title="Sign out" aria-label="Sign out">{{ icon("logout") }}</button>
+    </form>
+  </aside>
+  <main class="main">
+{% block main %}{% endblock %}
+  </main>
+</div>
+</body>
+</html>

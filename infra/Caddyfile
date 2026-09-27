@@ -1,4 +1,8 @@
 beta.fkey.app {
-	reverse_proxy 127.0.0.1:9040
+	reverse_proxy 127.0.0.1:9040 {
+		# No Cloudflare in front: a client-supplied CF-Connecting-IP would
+		# bypass fkey's per-IP auth limits. Caddy sets X-Forwarded-For itself.
+		header_up -CF-Connecting-IP
+	}
 	encode zstd gzip
 }

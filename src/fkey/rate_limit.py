@@ -20,6 +20,7 @@ class Limit:
 
 AUTH_LIMITS: dict[tuple[str, str], Limit] = {
     ("POST", "/oauth/login"): Limit(10, 60),
+    ("POST", "/app/login"): Limit(10, 60),
     ("POST", "/signup"): Limit(5, 300),
     ("GET", "/authorize"): Limit(30, 60),
     ("POST", "/authorize"): Limit(30, 60),
@@ -104,7 +105,7 @@ def _limited_response(path: str, status_code: int) -> PlainTextResponse | JSONRe
         else "Authentication is temporarily unavailable."
     )
     headers = {"Cache-Control": "no-store"}
-    if path in {"/oauth/login", "/signup"}:
+    if path in {"/oauth/login", "/app/login", "/signup"}:
         return PlainTextResponse(message, status_code=status_code, headers=headers)
     return JSONResponse(
         {"error": "temporarily_unavailable", "error_description": message},

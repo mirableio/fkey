@@ -30,8 +30,12 @@ ACCESS_TOKEN_SECONDS = 60 * 60
 REFRESH_TOKEN_SECONDS = 60 * 60 * 24 * 30
 AUTHORIZATION_REQUEST_SECONDS = 10 * 60
 AUTHORIZATION_CODE_SECONDS = 5 * 60
+SESSION_SECONDS = REFRESH_TOKEN_SECONDS
 MCP_SCOPE = "fkey"
 OFFLINE_SCOPE = "offline_access"
+# First-party browse UI sessions live in oauth_tokens under this reserved
+# client id; the OAuth endpoints never resolve it as a client.
+WEB_CLIENT_ID = "fkey-web"
 
 
 class LoginError(ValueError):
@@ -140,6 +144,13 @@ class OAuthProvider:
                     );
                     """
                 )
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO oauth_clients (client_id, client_json, created_at)
+                    VALUES (?, '{}', ?)
+                    """,
+                    (WEB_CLIENT_ID, int(time.time())),
+                )
             self._initialized_path = store.path
 
     @staticmethod
@@ -179,6 +190,8 @@ class OAuthProvider:
             )
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
+        if client_id == WEB_CLIENT_ID:
+            return None
         store = self._store()
         with store.session() as connection:
             row = connection.execute(
@@ -501,6 +514,47 @@ class OAuthProvider:
                 connection.execute(
                     "DELETE FROM oauth_tokens WHERE grant_id = ?", (row["grant_id"],)
                 )
+
+    def start_session(self, email: str, password: str) -> str:
+        """Authenticate a browse UI sign-in and mint its session token."""
+        store = self._store()
+        account = store.authenticate(email, password)
+        if account is None:
+            raise LoginError("Email or password is incorrect.")
+        token = secrets.token_urlsafe(32)
+        now = int(time.time())
+        with store.session() as connection:
+            self._remove_expired(connection)
+            connection.execute(
+                """
+                INSERT INTO oauth_tokens
+                    (token_hash, kind, grant_id, client_id, subject, scopes_json,
+                     resource, expires_at, created_at)
+                VALUES (?, 'session', ?, ?, ?, '[]', ?, ?, ?)
+                """,
+                (
+                    _token_hash(token),
+                    secrets.token_hex(16),
+                    WEB_CLIENT_ID,
+                    account["id"],
+                    f"{self.issuer_url}/app",
+                    now + SESSION_SECONDS,
+                    now,
+                ),
+            )
+        return token
+
+    def session_subject(self, token: str) -> str | None:
+        row = self._load_token(token, "session", WEB_CLIENT_ID)
+        return None if row is None else row["subject"]
+
+    def end_session(self, token: str) -> None:
+        store = self._store()
+        with store.session() as connection:
+            connection.execute(
+                "DELETE FROM oauth_tokens WHERE token_hash = ? AND kind = 'session'",
+                (_token_hash(token),),
+            )
 
     def _load_token(
         self,

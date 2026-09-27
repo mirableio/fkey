@@ -42,6 +42,11 @@ def quote_identifier(name: str) -> str:
     return f'"{name}"'
 
 
+def casefold(value: Any) -> Any:
+    # SQLite's LOWER and LIKE fold ASCII only; Python casefolds every script.
+    return value.casefold() if isinstance(value, str) else value
+
+
 def slugify(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value.casefold())
     slug: list[str] = []
@@ -76,6 +81,7 @@ class TasteDB:
         connection = sqlite3.connect(self.path, timeout=BUSY_TIMEOUT_MS / 1000)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.create_function("casefold", 1, casefold, deterministic=True)
         return connection
 
     @contextmanager

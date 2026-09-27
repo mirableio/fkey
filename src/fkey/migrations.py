@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import shutil
 import sqlite3
+import time
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from fkey.engine import (
     BACKBONE_FIELDS,
+    IDENTIFIER_RE,
     json_dumps,
     quote_identifier,
     slugify,
@@ -35,6 +37,7 @@ _DENIED_MIGRATION_PRAGMAS = {
 }
 SNAPSHOT_RETENTION = 15
 SNAPSHOT_LABEL_MAX_BYTES = 48
+QUERY_TIMEOUT_SECONDS = 30
 
 
 def _snapshot_label(value: str) -> str:
@@ -54,10 +57,20 @@ def query(
     if not re.match(r"^\s*(SELECT|WITH)\b", sql, flags=re.IGNORECASE):
         raise ValueError("query accepts a SELECT or WITH statement only")
     connection = db.connect()
+    deadline = time.monotonic() + QUERY_TIMEOUT_SECONDS
+    connection.set_progress_handler(lambda: time.monotonic() > deadline, 10_000)
     try:
         connection.execute("PRAGMA query_only = ON")
-        cursor = connection.execute(sql, list(parameters or []))
-        rows = cursor.fetchmany(max(1, int(limit)) + 1)
+        try:
+            cursor = connection.execute(sql, list(parameters or []))
+            rows = cursor.fetchmany(max(1, int(limit)) + 1)
+        except sqlite3.OperationalError as error:
+            if str(error) != "interrupted":
+                raise
+            raise ValueError(
+                f"query stopped after {QUERY_TIMEOUT_SECONDS} seconds; narrow it "
+                "or aggregate less."
+            ) from error
         truncated = len(rows) > limit
         rows = rows[:limit]
         columns: list[str] = []
@@ -183,6 +196,12 @@ def _check_required_structures(db: TasteDB, connection: sqlite3.Connection) -> N
                 f"Collection {collection!r} is missing backbone columns: "
                 f"{', '.join(missing)}."
             )
+        invalid = sorted(field for field in fields if not IDENTIFIER_RE.fullmatch(field))
+        if invalid:
+            raise ValueError(
+                f"Collection {collection!r} has invalid field names: "
+                f"{', '.join(invalid)}; use lowercase letters, numbers, and underscores."
+            )
 
     if connection.execute("SELECT 1 FROM profiles WHERE id = 'self'").fetchone() is None:
         raise ValueError("Migration removed the stable 'self' profile.")
@@ -262,6 +281,13 @@ def migrate(
 ) -> dict[str, Any]:
     if not statements:
         raise ValueError("migrate requires at least one SQL statement")
+    with db._lock:
+        return _migrate(db, description, statements)
+
+
+def _migrate(
+    db: TasteDB, description: str, statements: list[str]
+) -> dict[str, Any]:
     migration_id = _next_migration_id(db)
     backup_file = snapshot(db, "migration", f"{migration_id}-{description}")
     connection = db.connect()
@@ -334,12 +360,14 @@ def migrate(
             connection.execute("ROLLBACK")
         except sqlite3.Error:
             pass
+        # Nothing changed, so the snapshot would only crowd out real restore points.
+        (db.backup_dir / backup_file).unlink(missing_ok=True)
         detail: Exception = error
         if rejected_operation:
             detail = ValueError(rejected_operation[0])
         raise ValueError(
-            f"Migration failed; no changes were committed. Snapshot {backup_file!r} "
-            f"was kept. {type(detail).__name__}: {detail}"
+            "Migration failed; no changes were committed. "
+            f"{type(detail).__name__}: {detail}"
         ) from error
     finally:
         connection.close()

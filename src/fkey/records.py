@@ -20,6 +20,9 @@ if TYPE_CHECKING:
     from fkey.engine import TasteDB
 
 
+RECORD_LINK_LIMIT = 100
+
+
 def _validate_values(
     db: TasteDB,
     connection: sqlite3.Connection,
@@ -243,11 +246,18 @@ def get_record(db: TasteDB, collection: str, record_id: str) -> dict[str, Any]:
             SELECT * FROM links
             WHERE (from_collection = ? AND from_id = ?)
                OR (to_collection = ? AND to_id = ?)
-            ORDER BY created_at
+            ORDER BY updated_at DESC
+            LIMIT ?
             """,
-            (collection, record_id, collection, record_id),
+            (collection, record_id, collection, record_id, RECORD_LINK_LIMIT + 1),
         ).fetchall()
-        return {"record": record, "links": [decode_link(row) for row in rows]}
+        result = {
+            "record": record,
+            "links": [decode_link(row) for row in rows[:RECORD_LINK_LIMIT]],
+        }
+        if len(rows) > RECORD_LINK_LIMIT:
+            result["links_truncated"] = True
+        return result
 
 
 def update_record(
@@ -333,12 +343,12 @@ def find_records(
             clauses.append(
                 "("
                 + " OR ".join(
-                    f"LOWER(COALESCE({quote_identifier(name)}, '')) LIKE LOWER(?)"
+                    f"instr(casefold({quote_identifier(name)}), ?) > 0"
                     for name in text_columns
                 )
                 + ")"
             )
-            params.extend([f"%{text}%"] * len(text_columns))
+            params.extend([text.casefold()] * len(text_columns))
 
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = connection.execute(

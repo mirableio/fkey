@@ -12,5 +12,9 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
 RUN uv sync --frozen --no-dev
 
+# Bind-mounted data/ and backups/ must be owned by this UID (see make deploy).
+RUN useradd --system --uid 10001 --no-create-home fkey
+USER fkey
+
 CMD ["fkey", "--http", "--host", "0.0.0.0", "--port", "8000", "--public"]
 
