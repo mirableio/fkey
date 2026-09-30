@@ -43,12 +43,13 @@ like Airtable or Baserow.
   a hand-built table, so resizing, sizing to content, pinning, sorting, and
   keyboard navigation behave like the products we're emulating:
   - A row-number column, then the primary column (`title` or `name`), both
-    pinned while scrolling sideways. The primary cell links to the record.
+    pinned while scrolling sideways on wider screens. The primary cell links
+    to the record.
   - The collection's fields in schema order. Headers carry a small type icon
     (text, number) and the field name; hovering shows the field's
     description from `_meta`.
   - Columns start sized to their content, within a limit (320px; 360px for
-    the name, 520px for `extra`, 170px for the name on phones). Drag a header
+    the name, 520px for `extra`, 200px for the name on phones). Drag a header
     edge to resize; dragged widths are remembered per collection in your
     browser, while the other columns keep fitting their content.
   - **Your rating** and **Last** columns, read from your own (`self`) link
@@ -135,9 +136,10 @@ Airtable and Baserow share a recognizable language; we follow it:
   `web.py`, so signup, connector login, and app login look like one product.
 - **Icons** from a small SVG sprite of outline icons (adapted from Tabler,
   MIT) inlined into each page — no icon fonts or CDNs.
-- **Phones**: the sidebar folds behind a menu button, the grid scrolls
-  sideways with the primary column pinned, and the record page becomes one
-  column.
+- **Phones** (under 760px): the sidebar folds behind a menu button; in the
+  grid nothing is pinned and row numbers are hidden, so a sideways swipe
+  moves whole rows and each column gets the full screen width (pinning ate
+  most of a 375px screen); the record page becomes one column.
 - **Keyboard**: `/` focuses search and `Esc` clears it; arrow keys move
   through the grid and Enter opens the row; pills are real links reachable
   with Tab.

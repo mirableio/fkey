@@ -2,9 +2,11 @@
 (() => {
   const search = document.getElementById("search");
   const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+  // Phones: nothing is pinned and row numbers are hidden, so a sideways
+  // swipe moves the whole row and every column gets the full screen width.
   const narrow = matchMedia("(max-width: 760px)").matches;
-  // The pinned name column must leave room to scroll the rest on phones.
-  const AUTO_WIDTH_LIMITS = { primary: narrow ? 170 : 360, pills: 520 };
+  const pinned = narrow ? null : "left";
+  const AUTO_WIDTH_LIMITS = { primary: narrow ? 200 : 360, pills: 520 };
   const AUTO_WIDTH_LIMIT = 320;
 
   document.addEventListener("keydown", (event) => {
@@ -105,7 +107,7 @@
         cellClass: `cell-${column.kind}`,
       };
       if (column.kind === "primary") {
-        Object.assign(definition, { pinned: "left", lockPinned: true, cellRenderer: primaryCell });
+        Object.assign(definition, { pinned, lockPinned: true, cellRenderer: primaryCell });
       } else if (column.kind === "number") {
         Object.assign(definition, {
           type: "rightAligned",
@@ -149,7 +151,8 @@
       valueGetter: (params) => params.node.rowIndex + 1,
       width: 56,
       minWidth: 48,
-      pinned: "left",
+      hide: narrow,
+      pinned,
       lockPinned: true,
       resizable: false,
       sortable: false,
